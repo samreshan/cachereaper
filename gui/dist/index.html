@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cachereap</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="aurora" aria-hidden="true"></div>
+
+    <header class="glass">
+      <nav id="crumbs" aria-label="Breadcrumb"></nav>
+      <div class="spacer"></div>
+
+      <div id="mode" class="segmented" role="tablist" aria-label="Interaction mode">
+        <button role="tab" data-mode="explore" class="on" aria-selected="true">Explore</button>
+        <button role="tab" data-mode="select" aria-selected="false">Select</button>
+      </div>
+
+      <label class="control">
+        <span>colour</span>
+        <select id="colour-mode">
+          <option value="tier">risk tier</option>
+          <option value="type">file type</option>
+          <option value="age">age</option>
+        </select>
+      </label>
+
+      <button id="up" class="ghost" title="Go up one level (Backspace)">↑</button>
+    </header>
+
+    <main>
+      <div id="map-wrap">
+        <canvas id="map" tabindex="0" aria-label="Disk usage treemap"></canvas>
+        <div id="marquee" hidden></div>
+        <div id="mode-hint" class="glass pill">
+          <strong>Select mode</strong> · click blocks or drag a box · ⌥click to drill in
+        </div>
+      </div>
+
+      <aside id="panel" class="glass">
+        <div id="summary">
+          <div class="stat"><span id="total">—</span><small>scanned</small></div>
+          <div class="stat accent"><span id="reclaimable">—</span><small>reclaimable</small></div>
+        </div>
+
+        <div id="legend">
+          <span><i class="swatch low"></i>low</span>
+          <span><i class="swatch medium"></i>medium</span>
+          <span><i class="swatch high"></i>high</span>
+          <span><i class="swatch none"></i>unclassified</span>
+        </div>
+
+        <section id="selection-box" class="card">
+          <div class="row">
+            <strong id="selected-count">Nothing selected</strong>
+            <span id="selected-size" class="mono">0B</span>
+          </div>
+          <p id="unclassified-warning" hidden></p>
+          <div class="row buttons">
+            <button id="select-low" class="ghost">all low risk</button>
+            <button id="clear" class="ghost">clear</button>
+          </div>
+          <button id="delete" class="danger" disabled>Delete selected</button>
+        </section>
+
+        <h2>Findings</h2>
+        <ul id="findings"></ul>
+
+        <p id="warning" hidden></p>
+      </aside>
+    </main>
+
+    <div id="tooltip" class="glass" hidden></div>
+    <div id="status" class="glass pill">scanning…</div>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
