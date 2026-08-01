@@ -7,9 +7,7 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div class="aurora" aria-hidden="true"></div>
-
-    <header class="glass">
+    <header>
       <nav id="crumbs" aria-label="Breadcrumb"></nav>
       <div class="spacer"></div>
 
@@ -34,15 +32,15 @@
       <div id="map-wrap">
         <canvas id="map" tabindex="0" aria-label="Disk usage treemap"></canvas>
         <div id="marquee" hidden></div>
-        <div id="mode-hint" class="glass pill">
+        <div id="mode-hint">
           <strong>Select mode</strong> · click blocks or drag a box · ⌥click to drill in
         </div>
       </div>
 
-      <aside id="panel" class="glass">
+      <aside id="panel">
         <div id="summary">
-          <div class="stat"><span id="total">—</span><small>scanned</small></div>
           <div class="stat accent"><span id="reclaimable">—</span><small>reclaimable</small></div>
+          <div id="total-line"><span id="total">—</span> scanned</div>
         </div>
 
         <div id="legend">
@@ -72,8 +70,8 @@
       </aside>
     </main>
 
-    <div id="tooltip" class="glass" hidden></div>
-    <div id="status" class="glass pill">scanning…</div>
+    <div id="tooltip" hidden></div>
+    <div id="status">scanning…</div>
 
     <script type="module" src="app.js"></script>
   </body>

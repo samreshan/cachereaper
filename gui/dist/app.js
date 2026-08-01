@@ -9,9 +9,12 @@
 
 import { squarify, human } from "./treemap.js";
 
-const MIN_CELL = 5; // px; below this a rectangle is not worth drawing or recursing into
-const MAX_DEPTH = 12;
-const GAP = 1.5; // px of breathing room between sibling blocks
+// Bigger minimum than feels necessary, on purpose. At 5px the map rendered
+// ~15,000 cells and read as speckle; at 10 it renders a few thousand legible
+// blocks. You cannot click a 2px rectangle anyway.
+const MIN_CELL = 10;
+const MAX_DEPTH = 10;
+const GAP = 1; // px between sibling blocks
 
 const canvas = document.getElementById("map");
 const ctx = canvas.getContext("2d", { alpha: false });
@@ -37,12 +40,16 @@ const state = {
 // not always. A sticky flag would sit there and swallow the next real click.
 let lastDragEnd = 0;
 
-// h, s, l — kept as components so cells can be shaded without a colour library
+// h, s, l components. Risk tiers stay saturated so they carry the eye; anything
+// the rules did not claim is deliberately drained of colour so it recedes. The
+// map should answer "what can I delete" at a glance, not "what is on my disk".
 const TIER_HSL = {
-  low: [147, 52, 58],
-  medium: [42, 81, 65],
-  high: [4, 79, 72],
+  low: [148, 46, 44],
+  medium: [40, 68, 48],
+  high: [4, 60, 52],
 };
+
+const isDark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
 
 // ---------------------------------------------------------------------------
 // data
@@ -206,7 +213,10 @@ function baseHsl(index, depth) {
   if (state.colourMode === "tier") {
     const tier = inheritedTier(index);
     if (tier) return TIER_HSL[tier];
-    return [219, 11, 34 + Math.min(depth, 8) * 2.2];
+    // unclassified: near-neutral, low contrast, nesting shown by a slight step
+    return isDark()
+      ? [220, 7, 22 + Math.min(depth, 7) * 2.0]
+      : [220, 9, 84 - Math.min(depth, 7) * 2.4];
   }
   if (state.colourMode === "age") {
     const days = (Date.now() / 1000 - node.m) / 86400;
@@ -286,25 +296,46 @@ function drawNode(index, rect, depth) {
   // Children plus one synthetic cell for the bytes held in files directly here,
   // so a folder full of large files is not invisible next to its subfolders.
   const items = children
-    .map((c) => ({ value: sizeOf(c), node: c }))
+    .map((c) => ({ value: sizeOf(c), node: c, kind: "child" }))
     .filter((i) => i.value > 0);
-  if (node.o > 0) items.push({ value: node.o, node: -index - 1 });
+  if (node.o > 0) items.push({ value: node.o, node: index, kind: "own" });
 
   if (!items.length || depth >= MAX_DEPTH) {
     paintLeaf(index, rect, depth);
     return;
   }
 
-  for (const cell of squarify(items, rect)) {
-    if (cell.w < MIN_CELL || cell.h < MIN_CELL) {
-      paintLeaf(index, cell, depth);
-      continue;
+  // Anything that would render smaller than a readable block is folded into a
+  // single "N smaller" cell. Drawing them individually produced thousands of
+  // 2px specks that carried no information but dominated the texture.
+  const area = rect.w * rect.h;
+  const total = items.reduce((s, i) => s + i.value, 0);
+  const floor = MIN_CELL * MIN_CELL * 2.2;
+  const big = [];
+  let restValue = 0;
+  let restCount = 0;
+  for (const item of items) {
+    if ((item.value / total) * area >= floor) big.push(item);
+    else {
+      restValue += item.value;
+      restCount += 1;
     }
-    if (cell.item.node < 0) {
-      paintLeaf(index, cell, depth + 1); // "files directly here"
-      continue;
+  }
+  if (restValue > 0) big.push({ value: restValue, node: index, kind: "rest", count: restCount });
+
+  if (!big.length) {
+    paintLeaf(index, rect, depth);
+    return;
+  }
+
+  for (const cell of squarify(big, rect)) {
+    const item = cell.item;
+    if (item.kind === "child" && cell.w >= MIN_CELL && cell.h >= MIN_CELL) {
+      drawNode(item.node, inset(cell), depth + 1);
+    } else {
+      const owner = item.kind === "child" ? item.node : index;
+      paintLeaf(owner, cell, depth + 1, item.kind === "rest" ? item.count : 0, item.kind);
     }
-    drawNode(cell.item.node, inset(cell), depth + 1);
   }
 }
 
@@ -327,46 +358,59 @@ function roundRect(x, y, w, h, r) {
   return radius;
 }
 
-function paintLeaf(index, rect, depth) {
+/**
+ * `kind` decides how a cell behaves once drawn:
+ *   child — a real node; clickable, and counted for marquee collapse
+ *   own   — the files sitting directly in this folder; a click means "the
+ *           folder", but it is kept out of the coverage maths so that clipping
+ *           the strip with a marquee does not select the whole folder
+ *   rest  — the "N smaller" aggregate; stands for many siblings at once, so it
+ *           is inert: neither clickable nor counted
+ */
+function paintLeaf(index, rect, depth, restCount = 0, kind = "child") {
   const base = baseHsl(index, depth);
-  const radius = Math.min(7, rect.w / 5, rect.h / 5);
 
-  // cushion shading: a light top edge falling to the base colour
-  const grad = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.h);
-  grad.addColorStop(0, hsl(base, 7));
-  grad.addColorStop(1, hsl(base, -5));
-
-  roundRect(rect.x, rect.y, rect.w, rect.h, radius);
-  ctx.fillStyle = grad;
+  // Flat fill and a hairline edge. Gradients on thousands of small rectangles
+  // add texture the reader has to look past.
+  roundRect(rect.x, rect.y, rect.w, rect.h, 2);
+  ctx.fillStyle = hsl(base);
   ctx.fill();
 
   if (rect.w > 3 && rect.h > 3) {
-    ctx.strokeStyle = "rgba(0,0,0,0.22)";
-    ctx.lineWidth = 0.75;
+    ctx.strokeStyle = isDark() ? "rgba(0,0,0,0.35)" : "rgba(0,0,0,0.13)";
+    ctx.lineWidth = 1;
     ctx.stroke();
   }
 
-  state.cells.push({ index, ...rect });
-  let i = index;
-  let hops = 0;
-  while (i >= 0 && hops < 128) {
-    state.drawnUnder.set(i, (state.drawnUnder.get(i) || 0) + 1);
-    if (i === 0) break;
-    i = state.nodes[i].p;
-    hops += 1;
+  state.cells.push({ index, kind, ...rect });
+  if (kind === "child") {
+    let i = index;
+    let hops = 0;
+    while (i >= 0 && hops < 128) {
+      state.drawnUnder.set(i, (state.drawnUnder.get(i) || 0) + 1);
+      if (i === 0) break;
+      i = state.nodes[i].p;
+      hops += 1;
+    }
   }
 
-  if (rect.w > 64 && rect.h > 17) {
+  // Label only blocks big enough to read comfortably; a cramped label is noise.
+  if (rect.w > 78 && rect.h > 22) {
+    const light = base[2] > 55;
     ctx.save();
-    roundRect(rect.x + 3, rect.y + 2, rect.w - 6, rect.h - 4, 4);
+    roundRect(rect.x + 3, rect.y + 2, rect.w - 6, rect.h - 4, 2);
     ctx.clip();
-    ctx.fillStyle = "rgba(255,255,255,0.92)";
-    ctx.font = "600 11px -apple-system, system-ui, sans-serif";
-    ctx.fillText(nameOf(index), rect.x + 6, rect.y + 14);
-    if (rect.h > 32) {
-      ctx.fillStyle = "rgba(255,255,255,0.62)";
-      ctx.font = "11px -apple-system, system-ui, sans-serif";
-      ctx.fillText(human(sizeOf(index)), rect.x + 6, rect.y + 27);
+    ctx.font = "11px -apple-system, system-ui, sans-serif";
+    if (restCount > 0) {
+      ctx.fillStyle = light ? "rgba(0,0,0,0.45)" : "rgba(255,255,255,0.5)";
+      ctx.fillText(`${restCount} smaller`, rect.x + 6, rect.y + 15);
+    } else {
+      ctx.fillStyle = light ? "rgba(0,0,0,0.78)" : "rgba(255,255,255,0.93)";
+      ctx.fillText(nameOf(index), rect.x + 6, rect.y + 15);
+      if (rect.h > 38) {
+        ctx.fillStyle = light ? "rgba(0,0,0,0.5)" : "rgba(255,255,255,0.6)";
+        ctx.fillText(human(sizeOf(index)), rect.x + 6, rect.y + 29);
+      }
     }
     ctx.restore();
   }
@@ -400,11 +444,11 @@ function drawSelection() {
   const bounds = new Map();
 
   ctx.save();
-  ctx.fillStyle = "rgba(125, 182, 240, 0.34)";
+  ctx.fillStyle = "rgba(76, 155, 232, 0.36)";
   for (const cell of state.cells) {
     const owner = selectedAncestor(cell.index);
     if (owner === null) continue;
-    roundRect(cell.x, cell.y, cell.w, cell.h, Math.min(7, cell.w / 5, cell.h / 5));
+    roundRect(cell.x, cell.y, cell.w, cell.h, 2);
     ctx.fill();
 
     const b = bounds.get(owner) ?? { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
@@ -417,10 +461,8 @@ function drawSelection() {
 
   ctx.strokeStyle = accent;
   ctx.lineWidth = 2;
-  ctx.shadowColor = accent;
-  ctx.shadowBlur = 8;
   for (const b of bounds.values()) {
-    roundRect(b.x0 - 1, b.y0 - 1, b.x1 - b.x0 + 2, b.y1 - b.y0 + 2, 8);
+    roundRect(b.x0 - 1, b.y0 - 1, b.x1 - b.x0 + 2, b.y1 - b.y0 + 2, 2);
     ctx.stroke();
   }
   ctx.restore();
@@ -431,9 +473,8 @@ function drawHover() {
   const cell = state.cells.find((c) => c.index === state.hover);
   if (!cell) return;
   ctx.save();
-  const radius = Math.min(7, cell.w / 5, cell.h / 5);
-  roundRect(cell.x, cell.y, cell.w, cell.h, radius);
-  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  roundRect(cell.x, cell.y, cell.w, cell.h, 2);
+  ctx.strokeStyle = isDark() ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.75)";
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.restore();
@@ -490,13 +531,34 @@ function renderFindings() {
     (a, b) => order[a.tier] - order[b.tier] || b.size - a.size
   );
 
+  const TIER_LABEL = {
+    low: "Safe to delete",
+    medium: "Reinstallable",
+    high: "Review each",
+  };
+
   const list = document.getElementById("findings");
   list.innerHTML = "";
+  let lastTier = null;
+
   for (const g of sorted) {
+    // One heading per tier, in words. Repeating a coloured dot on every row asks
+    // the reader to decode the same thing over and over.
+    if (g.tier !== lastTier) {
+      lastTier = g.tier;
+      const head = document.createElement("li");
+      head.className = `tier-head ${g.tier}`;
+      const sum = sorted
+        .filter((x) => x.tier === g.tier)
+        .reduce((s, x) => s + x.size, 0);
+      head.innerHTML = `<span>${TIER_LABEL[g.tier]}</span><span class="sum">${human(sum)}</span>`;
+      list.append(head);
+    }
+
     const li = document.createElement("li");
-    if (g.nodes.every((n) => state.selected.has(n))) li.className = "on";
+    li.className = "rule";
+    if (g.nodes.every((n) => state.selected.has(n))) li.classList.add("on");
     li.innerHTML = `
-      <span class="dot" style="background:var(--${g.tier})"></span>
       <span class="size">${human(g.size)}</span>
       <span class="id">${g.id}</span>
       <span class="count">${g.nodes.length > 1 ? `×${g.nodes.length}` : ""}</span>`;
@@ -596,6 +658,7 @@ window.addEventListener("mouseup", () => {
   lastDragEnd = performance.now();
 
   const hits = state.cells
+    .filter((c) => c.kind === "child")
     .filter((c) => c.x < r.x + r.w && c.x + c.w > r.x && c.y < r.y + r.h && c.y + c.h > r.y)
     .map((c) => c.index);
   if (!hits.length) return;
@@ -646,6 +709,7 @@ canvas.addEventListener("click", (e) => {
   const wantsSelect = state.mode === "select" ? !e.altKey : e.metaKey || e.ctrlKey;
 
   if (wantsSelect) {
+    if (cell.kind === "rest") return; // stands for many siblings, not one thing
     // In explore mode a modifier-click snaps to the nearest claimed folder,
     // which is almost always what is meant. In select mode the block you
     // clicked is what you get.
