@@ -1,7 +1,7 @@
-//! Rule matching against the table generated from `cachereap.py`.
+//! Rule matching against the table generated from `cachereaper.py`.
 //!
 //! The rules themselves are never written here — `gui/rules.generated.json` is
-//! produced by `cachereap.py dump-rules` and embedded at compile time, so the
+//! produced by `cachereaper.py dump-rules` and embedded at compile time, so the
 //! Python CLI stays the single definition of what counts as a cache. CI fails if
 //! the committed copy drifts from the source.
 //!
@@ -18,7 +18,7 @@ use crate::scan::{Tree, NONE};
 const EMBEDDED: &str = include_str!("../../rules.generated.json");
 
 /// Top-level directories the CLI does not search for project artifacts.
-/// Mirrors `SKIP_TOP_LEVEL` in cachereap.py.
+/// Mirrors `SKIP_TOP_LEVEL` in cachereaper.py.
 pub const SKIP_TOP_LEVEL: &[&str] = &[
     "Library",
     "Applications",
@@ -107,7 +107,7 @@ pub struct Finding {
 
 /// Decides whether a directory encountered during the walk is a build artifact.
 ///
-/// Mirrors `match_artifact` in cachereap.py: a rule only claims a directory when
+/// Mirrors `match_artifact` in cachereaper.py: a rule only claims a directory when
 /// its markers sit alongside it and its required contents are present. Rules
 /// gated on `need_gitignored` are deferred to a batched git pass afterwards.
 pub struct ArtifactMatcher {

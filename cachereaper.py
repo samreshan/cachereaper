@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-cachereap - find and reclaim disk space from caches and build artifacts.
+cachereaper - find and reclaim disk space from caches and build artifacts.
 
 Design rules:
   * Dry-run is the default. `clean` requires an explicit confirmation.
@@ -30,7 +30,7 @@ from pathlib import Path
 
 VERSION = "1.1.0"
 HOME = Path.home()
-LOG_DIR = HOME / ".cachereap"
+LOG_DIR = HOME / ".cachereaper"
 
 TIER_RANK = {"low": 0, "medium": 1, "high": 2}
 TIER_ORDER = ("low", "medium", "high")
@@ -248,7 +248,7 @@ ARTIFACT_RULES: dict[str, list[ArtifactRule]] = {
 HIDDEN_ARTIFACTS = {n for n in ARTIFACT_RULES if n.startswith(".")}
 
 # ---------------------------------------------------------------------------
-# safer vendor commands - reported by `cachereap tools`
+# safer vendor commands - reported by `cachereaper tools`
 # ---------------------------------------------------------------------------
 
 TOOL_COMMANDS = [
@@ -648,7 +648,7 @@ def print_report(cands: list[Candidate], args) -> None:
 
     usage = shutil.disk_usage("/")
     print()
-    print(BOLD(f"cachereap {VERSION}") + DIM(f"   disk: {human(usage.free)} free of {human(usage.total)}"))
+    print(BOLD(f"cachereaper {VERSION}") + DIM(f"   disk: {human(usage.free)} free of {human(usage.total)}"))
     print()
 
     for tier in TIER_ORDER:
@@ -688,10 +688,10 @@ def print_report(cands: list[Candidate], args) -> None:
             print(f"    {TIER_PAINT[tier](tier):<18} {human(tier_totals[tier]):>9}")
     print(f"    {'total':<9} {human(total):>9}")
     print()
-    print(DIM("  next: cachereap select                     (pick what to remove)"))
-    print(DIM("        cachereap clean --tier low           (safe caches only)"))
-    print(DIM("        cachereap scan -v --top 10           (see paths)"))
-    print(DIM("        cachereap tools                      (safer vendor commands)"))
+    print(DIM("  next: cachereaper select                     (pick what to remove)"))
+    print(DIM("        cachereaper clean --tier low           (safe caches only)"))
+    print(DIM("        cachereaper scan -v --top 10           (see paths)"))
+    print(DIM("        cachereaper tools                      (safer vendor commands)"))
     print()
 
 
@@ -789,7 +789,7 @@ def curses_select(groups: list[dict]):
             scr.erase()
             chosen = sum(it.size for g in groups for it in g["items"]
                          if str(it.path) in selected)
-            head = f" cachereap — select what to remove "
+            head = f" cachereaper — select what to remove "
             put(0, 0, head + " " * max(0, w - len(head)),
                 curses.A_REVERSE if color else curses.A_REVERSE)
             put(1, 1, f"selected {human(chosen)} of {human(grand)}"
@@ -1216,7 +1216,7 @@ def cmd_tools(args) -> int:
         if note:
             print(DIM(f"  {' ' * width}  {note}"))
     print()
-    print(BOLD("Rules cachereap knows about"))
+    print(BOLD("Rules cachereaper knows about"))
     for rule in STATIC_RULES:
         print(f"  {TIER_PAINT[rule.tier](rule.tier[:3]):<4} {rule.id:<24} {DIM(rule.label)}")
     for name, rules in sorted(ARTIFACT_RULES.items()):
@@ -1229,11 +1229,11 @@ def cmd_tools(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="cachereap",
+        prog="cachereaper",
         description="Find and reclaim disk space from caches and build artifacts.",
         epilog="Dry-run by default. `clean` always asks before deleting.",
     )
-    parser.add_argument("--version", action="version", version=f"cachereap {VERSION}")
+    parser.add_argument("--version", action="version", version=f"cachereaper {VERSION}")
     sub = parser.add_subparsers(dest="command")
 
     def common(p):

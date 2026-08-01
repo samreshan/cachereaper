@@ -1,4 +1,4 @@
-"""Tests for cachereap. Run: python3 -m unittest discover -s tests -v"""
+"""Tests for cachereaper. Run: python3 -m unittest discover -s tests -v"""
 
 import os
 import shutil
@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import cachereap as cr  # noqa: E402
+import cachereaper as cr  # noqa: E402
 
 
 def cand(path, rule="r", tier="low", size=0, **kw):

@@ -503,7 +503,7 @@ mod tests {
             pub fn new() -> Self {
                 let n = COUNTER.fetch_add(1, Ordering::SeqCst);
                 let path = std::env::temp_dir().join(format!(
-                    "cachereap-test-{}-{}-{}",
+                    "cachereaper-test-{}-{}-{}",
                     std::process::id(),
                     n,
                     std::time::SystemTime::now()

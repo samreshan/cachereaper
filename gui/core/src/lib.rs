@@ -1,4 +1,4 @@
-//! Core of the cachereap GUI: a parallel disk scanner and the safety guards.
+//! Core of the cachereaper GUI: a parallel disk scanner and the safety guards.
 //!
 //! Deliberately independent of Tauri so it can be tested and benchmarked with a
 //! plain `cargo test` / `cargo run --bin bench`, and so CI does not need the

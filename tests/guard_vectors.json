@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "note": "Shared test vectors for path_is_protected(). Both the Python suite (tests/test_cachereap.py) and the Rust suite (gui/src-tauri/src/guard.rs) assert against this file, so a guard that is changed in one language and not the other fails CI. $HOME is substituted at load time. `reason` must match the implementation's returned string exactly; an empty reason means the path is allowed.",
+  "note": "Shared test vectors for path_is_protected(). Both the Python suite (tests/test_cachereaper.py) and the Rust suite (gui/src-tauri/src/guard.rs) assert against this file, so a guard that is changed in one language and not the other fails CI. $HOME is substituted at load time. `reason` must match the implementation's returned string exactly; an empty reason means the path is allowed.",
   "cases": [
     {"path": "$HOME/OneDrive/proj/node_modules", "reason": "cloud-sync folder: OneDrive", "why": "cloud sync root"},
     {"path": "$HOME/OneDrive - Asia Pacific University/x/node_modules", "reason": "cloud-sync folder: OneDrive - Asia Pacific University", "why": "org-suffixed OneDrive"},

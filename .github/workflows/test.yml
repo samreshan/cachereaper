@@ -27,6 +27,6 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Smoke-test the CLI
         run: |
-          python cachereap.py --version
-          python cachereap.py tools
-          python cachereap.py scan --no-projects --tier high
+          python cachereaper.py --version
+          python cachereaper.py tools
+          python cachereaper.py scan --no-projects --tier high

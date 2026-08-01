@@ -5,7 +5,7 @@
 //!   cargo run --release --bin bench -- ~            # default thread sweep
 //!   cargo run --release --bin bench -- ~ 6          # a single thread count
 
-use cachereap_core::{human, scan_with_progress};
+use cachereaper_core::{human, scan_with_progress};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -15,7 +15,7 @@ fn main() {
     let root: PathBuf = args
         .next()
         .map(PathBuf::from)
-        .unwrap_or_else(cachereap_core::guard::home);
+        .unwrap_or_else(cachereaper_core::guard::home);
     let thread_counts: Vec<usize> = match args.next() {
         Some(n) => vec![n.parse().expect("thread count must be a number")],
         None => vec![1, 2, 4, 6, 8],

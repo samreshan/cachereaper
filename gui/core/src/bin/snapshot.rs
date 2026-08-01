@@ -1,14 +1,14 @@
 //! Dump a scan as JSON.
 //!
-//!   snapshot findings ~          # findings only, shaped like `cachereap scan --json`
+//!   snapshot findings ~          # findings only, shaped like `cachereaper scan --json`
 //!   snapshot tree ~ out.json     # the treemap payload
 //!
 //! `findings` exists so the Rust rule engine can be diffed directly against the
 //! Python CLI, which is the cross-check the plan asks for. `tree` feeds the
 //! frontend during development without needing the Tauri shell built.
 
-use cachereap_core::rules::{all_findings, marker_vocabulary};
-use cachereap_core::{default_threads, human, scan_with_markers};
+use cachereaper_core::rules::{all_findings, marker_vocabulary};
+use cachereaper_core::{default_threads, human, scan_with_markers};
 use std::path::PathBuf;
 
 fn main() {
@@ -17,7 +17,7 @@ fn main() {
     let root: PathBuf = args
         .next()
         .map(PathBuf::from)
-        .unwrap_or_else(cachereap_core::guard::home);
+        .unwrap_or_else(cachereaper_core::guard::home);
     let out = args.next();
 
     let tree = match scan_with_markers(&root, default_threads(), marker_vocabulary(), |_, _| {}) {
@@ -47,7 +47,7 @@ fn main() {
         }
         "tree" => {
             // Compact keys: this payload is large and mostly repeated field names.
-            let rule_of: std::collections::HashMap<u32, &cachereap_core::Finding> =
+            let rule_of: std::collections::HashMap<u32, &cachereaper_core::Finding> =
                 findings.iter().map(|f| (f.node, f)).collect();
             let nodes: Vec<_> = tree
                 .nodes
@@ -57,7 +57,7 @@ fn main() {
                     let hit = rule_of.get(&(idx as u32));
                     serde_json::json!({
                         "n": n.name,
-                        "p": if n.parent == cachereap_core::NONE { -1i64 } else { n.parent as i64 },
+                        "p": if n.parent == cachereaper_core::NONE { -1i64 } else { n.parent as i64 },
                         "c": n.children,
                         "s": n.total_size,
                         "o": n.own_size,

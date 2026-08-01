@@ -1,8 +1,8 @@
 [package]
-name = "cachereap-core"
+name = "cachereaper-core"
 version = "1.1.0"
 edition = "2021"
-description = "Parallel disk scanner and safety guards behind the cachereap GUI"
+description = "Parallel disk scanner and safety guards behind the cachereaper GUI"
 license = "MIT"
 
 [dependencies]
@@ -10,7 +10,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [lib]
-name = "cachereap_core"
+name = "cachereaper_core"
 path = "src/lib.rs"
 
 [[bin]]

@@ -1,4 +1,4 @@
-// cachereap treemap.
+// cachereaper treemap.
 //
 // Runs in two modes:
 //   * inside Tauri  -> talks to the Rust core over IPC
@@ -372,7 +372,7 @@ function paintLeaf(index, rect, depth, restCount = 0, kind = "child") {
 
   // Flat fill and a hairline edge. Gradients on thousands of small rectangles
   // add texture the reader has to look past.
-  roundRect(rect.x, rect.y, rect.w, rect.h, 2);
+  roundRect(rect.x, rect.y, rect.w, rect.h, 0);
   ctx.fillStyle = hsl(base);
   ctx.fill();
 
@@ -398,7 +398,7 @@ function paintLeaf(index, rect, depth, restCount = 0, kind = "child") {
   if (rect.w > 78 && rect.h > 22) {
     const light = base[2] > 55;
     ctx.save();
-    roundRect(rect.x + 3, rect.y + 2, rect.w - 6, rect.h - 4, 2);
+    roundRect(rect.x + 3, rect.y + 2, rect.w - 6, rect.h - 4, 0);
     ctx.clip();
     ctx.font = "11px -apple-system, system-ui, sans-serif";
     if (restCount > 0) {
@@ -448,7 +448,7 @@ function drawSelection() {
   for (const cell of state.cells) {
     const owner = selectedAncestor(cell.index);
     if (owner === null) continue;
-    roundRect(cell.x, cell.y, cell.w, cell.h, 2);
+    roundRect(cell.x, cell.y, cell.w, cell.h, 0);
     ctx.fill();
 
     const b = bounds.get(owner) ?? { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
@@ -462,7 +462,7 @@ function drawSelection() {
   ctx.strokeStyle = accent;
   ctx.lineWidth = 2;
   for (const b of bounds.values()) {
-    roundRect(b.x0 - 1, b.y0 - 1, b.x1 - b.x0 + 2, b.y1 - b.y0 + 2, 2);
+    roundRect(b.x0 - 1, b.y0 - 1, b.x1 - b.x0 + 2, b.y1 - b.y0 + 2, 0);
     ctx.stroke();
   }
   ctx.restore();
@@ -473,7 +473,7 @@ function drawHover() {
   const cell = state.cells.find((c) => c.index === state.hover);
   if (!cell) return;
   ctx.save();
-  roundRect(cell.x, cell.y, cell.w, cell.h, 2);
+  roundRect(cell.x, cell.y, cell.w, cell.h, 0);
   ctx.strokeStyle = isDark() ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.75)";
   ctx.lineWidth = 2;
   ctx.stroke();
@@ -591,7 +591,7 @@ function renderSelection() {
     warn.hidden = false;
     warn.innerHTML =
       `<strong>${unclassified}</strong> of these are not matched by any rule. ` +
-      `cachereap cannot tell you how to get them back, and they may not be caches at all.`;
+      `cachereaper cannot tell you how to get them back, and they may not be caches at all.`;
   } else {
     warn.hidden = true;
   }
@@ -828,8 +828,8 @@ window.addEventListener("resize", resize);
 
 // Debug/test hook: lets browser-driven UI checks assert on internal state and
 // exercise selection through the real code path rather than poking the Set.
-window.__cachereap = state;
-window.__cachereap.api = { addSelection, toggleSelection, collapseToFolders, covers, render };
+window.__cachereaper = state;
+window.__cachereaper.api = { addSelection, toggleSelection, collapseToFolders, covers, render };
 
 // ---------------------------------------------------------------------------
 // boot

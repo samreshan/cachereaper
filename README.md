@@ -1,4 +1,4 @@
-# cachereap
+# cachereaper
 
 Find and reclaim disk space from caches and build artifacts — with a risk tier on
 every finding, an interactive picker, and guards that make it hard to delete
@@ -29,7 +29,7 @@ HIGH RISK     stateful or expensive - review each one   [1.8G]
 ## Why another cleaner
 
 Most disk cleaners either delete a hardcoded list of paths, or ask you to trust a
-GUI with `sudo`. cachereap takes a different position:
+GUI with `sudo`. cachereaper takes a different position:
 
 - **Nothing is deleted without a rule**, and every rule carries a risk tier and a
   "here's how you get it back" note.
@@ -43,29 +43,29 @@ GUI with `sudo`. cachereap takes a different position:
 ## Install
 
 ```bash
-git clone https://github.com/<you>/cachereap
-install -m 755 cachereap/cachereap.py ~/.local/bin/cachereap
+git clone https://github.com/<you>/cachereaper
+install -m 755 cachereaper/cachereaper.py ~/.local/bin/cachereaper
 ```
 
-Or run it in place: `python3 cachereap.py scan`.
+Or run it in place: `python3 cachereaper.py scan`.
 
 ## Usage
 
 ```bash
-cachereap                                  # scan, low-risk findings (default)
-cachereap scan --tier high -v              # everything, with individual paths
-cachereap select                           # scan, then pick what to remove
-cachereap clean --tier low                 # delete safe caches (confirms first)
-cachereap clean --tier medium --stale-days 30 --dry-run
-cachereap tools                            # safer vendor commands + full rule list
+cachereaper                                  # scan, low-risk findings (default)
+cachereaper scan --tier high -v              # everything, with individual paths
+cachereaper select                           # scan, then pick what to remove
+cachereaper clean --tier low                 # delete safe caches (confirms first)
+cachereaper clean --tier medium --stale-days 30 --dry-run
+cachereaper tools                            # safer vendor commands + full rule list
 ```
 
 ### Picking what to remove
 
-`cachereap select` opens a full-screen picker:
+`cachereaper select` opens a full-screen picker:
 
 ```
- cachereap — select what to remove
+ cachereaper — select what to remove
  selected 5.0G of 10.0G   (78 paths)
 
  [x] >    1.2G        pnpm-store               pnpm content store
@@ -145,12 +145,12 @@ CoreSimulator, VS Code caches, Electron app caches
    result that goes stale is skipped, not deleted.
 5. **Stateful data is not a rule at all**: VM disks (Colima/Lima), chat and
    session history, `Downloads`, and source directories are never offered.
-6. **Everything is logged** to `~/.cachereap/reap-<timestamp>.jsonl` with the
+6. **Everything is logged** to `~/.cachereaper/reap-<timestamp>.jsonl` with the
    path, rule, byte count, and restore command.
 7. **High risk requires typing a phrase**, not just `y`.
 
 For things where a vendor command is genuinely safer than `rm -rf` — Docker,
-Colima, rustup, simctl, Time Machine local snapshots — `cachereap tools` prints
+Colima, rustup, simctl, Time Machine local snapshots — `cachereaper tools` prints
 the command instead of offering to delete the directory.
 
 ## Tests
