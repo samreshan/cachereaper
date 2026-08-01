@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "note": "Shared test vectors for path_is_protected(). Both the Python suite (tests/test_cachereap.py) and the Rust suite (gui/src-tauri/src/guard.rs) assert against this file, so a guard that is changed in one language and not the other fails CI. $HOME is substituted at load time. `reason` must match the implementation's returned string exactly; an empty reason means the path is allowed.",
+  "cases": [
+    {"path": "$HOME/OneDrive/proj/node_modules", "reason": "cloud-sync folder: OneDrive", "why": "cloud sync root"},
+    {"path": "$HOME/OneDrive - Asia Pacific University/x/node_modules", "reason": "cloud-sync folder: OneDrive - Asia Pacific University", "why": "org-suffixed OneDrive"},
+    {"path": "$HOME/Google Drive/proj/target", "reason": "cloud-sync folder: Google Drive", "why": "two-word cloud root"},
+    {"path": "$HOME/Dropbox/proj/node_modules", "reason": "cloud-sync folder: Dropbox", "why": "cloud sync root"},
+    {"path": "$HOME/iCloud Drive/proj/dist", "reason": "cloud-sync folder: iCloud Drive", "why": "cloud sync root"},
+    {"path": "$HOME/Creative Cloud Files/x/build", "reason": "cloud-sync folder: Creative Cloud Files", "why": "cloud sync root"},
+    {"path": "$HOME/Nextcloud/x/node_modules", "reason": "cloud-sync folder: Nextcloud", "why": "cloud sync root"},
+    {"path": "$HOME/pCloud Drive/x/node_modules", "reason": "cloud-sync folder: pCloud Drive", "why": "cloud sync root"},
+    {"path": "$HOME/MEGAsync/x/node_modules", "reason": "cloud-sync folder: MEGAsync", "why": "cloud sync root"},
+    {"path": "$HOME/Box Sync/x/node_modules", "reason": "cloud-sync folder: Box Sync", "why": "cloud sync root"},
+    {"path": "$HOME/Library/CloudStorage/GoogleDrive-a@b.com/p/node_modules", "reason": "protected component: CloudStorage", "why": "macOS cloud mount point"},
+    {"path": "$HOME/Programming/deep/nested/Dropbox/node_modules", "reason": "cloud-sync folder: Dropbox", "why": "cloud dir at any depth, not just top level"},
+
+    {"path": "$HOME/Programming/megaproject/node_modules", "reason": "", "why": "REGRESSION: 'megaproject' starts with the 'mega' hint but is not a cloud folder"},
+    {"path": "$HOME/Programming/boxes/node_modules", "reason": "", "why": "REGRESSION: 'boxes' must not match the 'box sync' hint"},
+    {"path": "$HOME/Programming/dropboxer/target", "reason": "", "why": "REGRESSION: 'dropboxer' is not Dropbox"},
+    {"path": "$HOME/Programming/icloudy/node_modules", "reason": "", "why": "REGRESSION: 'icloudy' is not iCloud"},
+    {"path": "$HOME/Programming/onedrive-clone/node_modules", "reason": "cloud-sync folder: onedrive-clone", "why": "deliberately conservative: a hyphen boundary still matches"},
+
+    {"path": "$HOME/Programming/app/.git/objects", "reason": "protected component: .git", "why": "git internals"},
+    {"path": "$HOME/Programming/app/.hg/store", "reason": "protected component: .hg", "why": "mercurial internals"},
+    {"path": "$HOME/Programming/app/.svn/pristine", "reason": "protected component: .svn", "why": "svn internals"},
+    {"path": "$HOME/.ssh/id_ed25519", "reason": "protected component: .ssh", "why": "private keys"},
+    {"path": "$HOME/.gnupg/private-keys-v1.d", "reason": "protected component: .gnupg", "why": "private keys"},
+    {"path": "$HOME/Library/Keychains/login.keychain-db", "reason": "protected component: Keychains", "why": "credentials"},
+    {"path": "$HOME/Library/Mobile Documents/com~apple~CloudDocs/x", "reason": "protected component: Mobile Documents", "why": "iCloud Drive backing store"},
+    {"path": "$HOME/Pictures/Photos Library.photoslibrary/originals", "reason": "protected component: Photos Library.photoslibrary", "why": "irreplaceable user data"},
+
+    {"path": "/", "reason": "path too shallow", "why": "filesystem root"},
+    {"path": "/usr", "reason": "path too shallow", "why": "single-component system path"},
+    {"path": "/Users", "reason": "path too shallow", "why": "single-component system path"},
+    {"path": "$HOME", "reason": "refusing home/root", "why": "home is 3 parts counting '/', so it passes the depth rule and is caught by the identity rule"},
+    {"path": "/tmp", "reason": "path too shallow", "why": "2 parts counting '/'"},
+
+    {"path": "$HOME/Programming/app/node_modules", "reason": "", "why": "the ordinary case must be allowed"},
+    {"path": "$HOME/Programming/app/target", "reason": "", "why": "rust build output"},
+    {"path": "$HOME/Programming/app/.venv", "reason": "", "why": "virtualenv"},
+    {"path": "$HOME/Programming/mygitproject/node_modules", "reason": "", "why": "REGRESSION: 'mygitproject' contains 'git' but has no .git component"},
+    {"path": "$HOME/Programming/app/src/.gitignore", "reason": "", "why": "REGRESSION: .gitignore is not the .git directory"},
+    {"path": "$HOME/.npm/_cacache", "reason": "", "why": "known cache location"},
+    {"path": "$HOME/Library/Caches/pip", "reason": "", "why": "known cache location"},
+    {"path": "$HOME/Library/Developer/Xcode/DerivedData/App-abc", "reason": "", "why": "known cache location"},
+    {"path": "$HOME/Downloads/proj/node_modules", "reason": "", "why": "artifacts under Downloads are still artifacts"},
+    {"path": "$HOME/Documents/school/project/__pycache__", "reason": "", "why": "artifacts under Documents are still artifacts"}
+  ]
+}

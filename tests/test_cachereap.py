@@ -36,26 +36,42 @@ class TestFormatting(unittest.TestCase):
         self.assertTrue(cr.human(5 * 1024 ** 3).endswith("G"))
 
 
+VECTORS = Path(__file__).resolve().parent / "guard_vectors.json"
+
+
+def load_vectors():
+    import json
+    doc = json.loads(VECTORS.read_text())
+    for case in doc["cases"]:
+        yield case, case["path"].replace("$HOME", str(cr.HOME))
+
+
 class TestPathGuards(unittest.TestCase):
-    H = cr.HOME
+    """Asserts against tests/guard_vectors.json, the same file the Rust GUI uses.
 
-    def test_blocks_cloud_sync_folders(self):
-        for name in ("OneDrive", "Google Drive", "Dropbox", "iCloud Drive"):
-            p = self.H / name / "proj" / "node_modules"
-            self.assertTrue(cr.path_is_protected(p), f"{name} should be protected")
+    A guard changed in one language and not the other fails here or in `cargo test`.
+    """
 
-    def test_blocks_protected_components(self):
-        for part in (".git", ".ssh", ".gnupg", "CloudStorage"):
-            p = self.H / "Programming" / "app" / part / "inner"
-            self.assertTrue(cr.path_is_protected(p), f"{part} should be protected")
+    def test_shared_vectors(self):
+        checked = 0
+        for case, path in load_vectors():
+            with self.subTest(path=case["path"], why=case["why"]):
+                self.assertEqual(cr.path_is_protected(Path(path)), case["reason"])
+            checked += 1
+        self.assertGreaterEqual(checked, 35, "vector file looks truncated")
 
-    def test_blocks_shallow_and_home(self):
-        self.assertTrue(cr.path_is_protected(Path("/usr")))
-        self.assertTrue(cr.path_is_protected(Path("/")))
-        self.assertTrue(cr.path_is_protected(self.H))
+    def test_vectors_cover_both_outcomes(self):
+        reasons = [case["reason"] for case, _ in load_vectors()]
+        self.assertGreaterEqual(sum(1 for r in reasons if r), 20, "need blocked cases")
+        self.assertGreaterEqual(sum(1 for r in reasons if not r), 10, "need allowed cases")
 
-    def test_allows_ordinary_artifact(self):
-        self.assertEqual(cr.path_is_protected(self.H / "Programming" / "app" / "node_modules"), "")
+    def test_cloud_hint_matches_only_at_a_name_boundary(self):
+        self.assertTrue(cr._looks_like_cloud_dir("OneDrive"))
+        self.assertTrue(cr._looks_like_cloud_dir("OneDrive - Acme Corp"))
+        self.assertTrue(cr._looks_like_cloud_dir("Google Drive"))
+        self.assertFalse(cr._looks_like_cloud_dir("megaproject"))
+        self.assertFalse(cr._looks_like_cloud_dir("boxes"))
+        self.assertFalse(cr._looks_like_cloud_dir("dropboxer"))
 
 
 class TestDeleteValidation(unittest.TestCase):
@@ -97,6 +113,43 @@ class TestDeleteValidation(unittest.TestCase):
     def test_rejects_vanished_path(self):
         c = cand(self.tmp / "a" / "node_modules", rule="node-modules", tier="medium")
         self.assertEqual(cr.validate_for_delete(c, [self.tmp]), "already gone")
+
+
+class TestOnDiskSize(unittest.TestCase):
+    """Sizes must reflect blocks occupied, never logical length."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_sparse_file_counts_as_the_space_it_occupies(self):
+        # A sparse file behaves like an iCloud/Google Drive dataless placeholder:
+        # huge st_size, ~zero st_blocks. Counting st_size inflated a real
+        # ~/Library measurement from 29.9G to 704G.
+        placeholder = self.tmp / "placeholder.bin"
+        with placeholder.open("wb") as fh:
+            fh.truncate(4 * 1024 ** 3)
+        write(self.tmp / "real.bin", 1)
+
+        size, _, files = cr.dir_stats(self.tmp)
+        self.assertEqual(files, 2)
+        # real.bin alone is 1 MiB; if the 4 GiB placeholder were counted this
+        # would be over 4_000_000_000 rather than a little over 1 MiB.
+        self.assertLess(size, 4 * 1024 ** 2, "sparse file counted at its logical size")
+
+    def test_empty_file_is_zero_not_fallback(self):
+        (self.tmp / "empty").touch()
+        size, _, files = cr.dir_stats(self.tmp)
+        self.assertEqual(files, 1)
+        self.assertEqual(size, 0)
+
+    def test_real_bytes_are_still_counted(self):
+        write(self.tmp / "solid.bin", 4)
+        size, _, _ = cr.dir_stats(self.tmp)
+        self.assertGreaterEqual(size, 4 * 1024 ** 2)
+        self.assertLess(size, 8 * 1024 ** 2)
 
 
 class TestDedupe(unittest.TestCase):

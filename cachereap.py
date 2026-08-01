@@ -46,8 +46,19 @@ FORBIDDEN_PARTS = {
 
 CLOUD_DIR_HINTS = (
     "onedrive", "google drive", "dropbox", "icloud", "creative cloud",
-    "pcloud", "mega", "sync.com", "box sync", "nextcloud",
+    "pcloud", "mega", "megasync", "sync.com", "box sync", "nextcloud",
 )
+
+
+def _looks_like_cloud_dir(name: str) -> bool:
+    """True for 'OneDrive - Acme' and 'Google Drive', false for 'megaproject'.
+
+    A bare prefix test would swallow any directory that merely starts with one of
+    these words, so a hint only matches at a name boundary.
+    """
+    low = name.lower()
+    return any(low == hint or low.startswith(hint + " ") or low.startswith(hint + "-")
+               for hint in CLOUD_DIR_HINTS)
 
 # Never descend into these during the project walk (top-level of a root).
 SKIP_TOP_LEVEL = {
@@ -316,15 +327,27 @@ def path_is_protected(path: Path) -> str:
     for part in parts:
         if part in FORBIDDEN_PARTS:
             return f"protected component: {part}"
-        low = part.lower()
-        for hint in CLOUD_DIR_HINTS:
-            if low.startswith(hint):
-                return f"cloud-sync folder: {part}"
+        if _looks_like_cloud_dir(part):
+            return f"cloud-sync folder: {part}"
     if len(parts) < 3:
         return "path too shallow"
     if path in (HOME, Path("/")):
         return "refusing home/root"
     return ""
+
+
+def on_disk_size(st) -> int:
+    """Bytes this file actually occupies, not its logical length.
+
+    `st_blocks` is authoritative wherever it exists and must NOT fall back to
+    `st_size` when it reads zero. Dataless placeholders (the iCloud Drive, Google
+    Drive and OneDrive mounts under ~/Library/CloudStorage) and sparse files
+    legitimately occupy no local blocks while reporting a large size. Counting
+    that length invents reclaimable space that deleting cannot recover — it
+    inflated one ~/Library measurement from 29.9G to 704G.
+    """
+    blocks = getattr(st, "st_blocks", None)
+    return blocks * 512 if blocks is not None else st.st_size
 
 
 def dir_stats(path: Path) -> tuple[int, float, int]:
@@ -337,8 +360,7 @@ def dir_stats(path: Path) -> tuple[int, float, int]:
     except OSError:
         return 0, 0.0, 0
     if not os.path.isdir(path) or path.is_symlink():
-        size = getattr(st, "st_blocks", 0) * 512 or st.st_size
-        return size, st.st_mtime, 1
+        return on_disk_size(st), st.st_mtime, 1
     newest = st.st_mtime
     stack = [str(path)]
     while stack:
@@ -358,7 +380,7 @@ def dir_stats(path: Path) -> tuple[int, float, int]:
                 if entry.is_dir(follow_symlinks=False):
                     stack.append(entry.path)
                 else:
-                    total += getattr(est, "st_blocks", 0) * 512 or est.st_size
+                    total += on_disk_size(est)
                     files += 1
     return total, newest, files
 
@@ -1144,6 +1166,45 @@ def cmd_clean(args) -> int:
     return 0
 
 
+def rules_document() -> dict:
+    """The rule tables as plain data.
+
+    This Python source stays the single definition of the rules; the GUI embeds
+    a generated copy of this document so both halves cannot disagree about what
+    is safe to delete. `gui/rules.generated.json` is checked against this in CI.
+    """
+    return {
+        "schema": 1,
+        "version": VERSION,
+        "tiers": list(TIER_ORDER),
+        "forbidden_parts": sorted(FORBIDDEN_PARTS),
+        "cloud_dir_hints": list(CLOUD_DIR_HINTS),
+        "skip_top_level": sorted(SKIP_TOP_LEVEL),
+        "static": [
+            {
+                "id": r.id, "tier": r.tier, "glob": r.glob, "label": r.label,
+                "regen": r.regen, "children": r.children, "warn": r.warn,
+                "system": r.system,
+            }
+            for r in STATIC_RULES
+        ],
+        "artifacts": [
+            {
+                "dir_name": name, "id": r.id, "tier": r.tier, "label": r.label,
+                "regen": r.regen, "markers": list(r.markers),
+                "contains": list(r.contains), "need_gitignored": r.need_gitignored,
+            }
+            for name, rules in sorted(ARTIFACT_RULES.items())
+            for r in rules
+        ],
+    }
+
+
+def cmd_dump_rules(args) -> int:
+    print(json.dumps(rules_document(), indent=2, sort_keys=False))
+    return 0
+
+
 def cmd_tools(args) -> int:
     print()
     print(BOLD("Vendor commands that are safer than rm -rf"))
@@ -1223,11 +1284,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_tools = sub.add_parser("tools", help="safer vendor commands + full rule list")
     p_tools.set_defaults(func=cmd_tools)
 
+    p_dump = sub.add_parser("dump-rules", help="print the rule tables as JSON (consumed by the GUI)")
+    p_dump.set_defaults(func=cmd_dump_rules)
+
     return parser
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--dump-rules":
+        argv[0] = "dump-rules"
     if not argv or (argv[0].startswith("-") and argv[0] not in ("--version", "-h", "--help")):
         argv = ["scan"] + argv
     parser = build_parser()

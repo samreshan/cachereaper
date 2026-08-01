@@ -1,0 +1,993 @@
+{
+  "schema": 1,
+  "version": "1.1.0",
+  "tiers": [
+    "low",
+    "medium",
+    "high"
+  ],
+  "forbidden_parts": [
+    ".git",
+    ".gnupg",
+    ".hg",
+    ".ssh",
+    ".svn",
+    "CloudStorage",
+    "Keychains",
+    "Mobile Documents",
+    "Photos Library.photoslibrary"
+  ],
+  "cloud_dir_hints": [
+    "onedrive",
+    "google drive",
+    "dropbox",
+    "icloud",
+    "creative cloud",
+    "pcloud",
+    "mega",
+    "megasync",
+    "sync.com",
+    "box sync",
+    "nextcloud"
+  ],
+  "skip_top_level": [
+    ".Trash",
+    "Applications",
+    "Library",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Public",
+    "Virtual Machines.localized"
+  ],
+  "static": [
+    {
+      "id": "npm-npx",
+      "tier": "low",
+      "glob": ".npm/_npx",
+      "label": "npx one-off package downloads",
+      "regen": "re-downloaded on next npx",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "npm-cache",
+      "tier": "low",
+      "glob": ".npm/_cacache",
+      "label": "npm content cache",
+      "regen": "npm cache clean --force",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "npm-logs",
+      "tier": "low",
+      "glob": ".npm/_logs",
+      "label": "npm debug logs",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "yarn-cache",
+      "tier": "low",
+      "glob": ".yarn/cache",
+      "label": "yarn cache",
+      "regen": "yarn install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "yarn-cache2",
+      "tier": "low",
+      "glob": "Library/Caches/Yarn",
+      "label": "yarn global cache",
+      "regen": "yarn install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "pnpm-store",
+      "tier": "low",
+      "glob": "Library/pnpm/store",
+      "label": "pnpm content store",
+      "regen": "pnpm install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "bun-cache",
+      "tier": "low",
+      "glob": ".bun/install/cache",
+      "label": "bun install cache",
+      "regen": "bun install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "pip-cache",
+      "tier": "low",
+      "glob": "Library/Caches/pip",
+      "label": "pip wheel cache",
+      "regen": "pip cache purge",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "pip-cache2",
+      "tier": "low",
+      "glob": ".cache/pip",
+      "label": "pip wheel cache",
+      "regen": "pip cache purge",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "uv-cache",
+      "tier": "low",
+      "glob": ".cache/uv",
+      "label": "uv package cache",
+      "regen": "uv cache clean",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "poetry-cache",
+      "tier": "low",
+      "glob": "Library/Caches/pypoetry",
+      "label": "poetry cache",
+      "regen": "poetry cache clear --all .",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "cargo-registry",
+      "tier": "low",
+      "glob": ".cargo/registry",
+      "label": "cargo crate sources + archives",
+      "regen": "cargo build re-downloads",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "cargo-git",
+      "tier": "low",
+      "glob": ".cargo/git",
+      "label": "cargo git checkouts",
+      "regen": "cargo build re-downloads",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "go-build",
+      "tier": "low",
+      "glob": "Library/Caches/go-build",
+      "label": "go build cache",
+      "regen": "go build",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "gradle-cache",
+      "tier": "low",
+      "glob": ".gradle/caches",
+      "label": "gradle dependency cache",
+      "regen": "gradle build",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "gradle-daemon",
+      "tier": "low",
+      "glob": ".gradle/daemon",
+      "label": "gradle daemon logs",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "composer-cache",
+      "tier": "low",
+      "glob": "Library/Caches/composer",
+      "label": "composer cache",
+      "regen": "composer install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "composer-cache2",
+      "tier": "low",
+      "glob": ".composer/cache",
+      "label": "composer cache",
+      "regen": "composer install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "cocoapods-cache",
+      "tier": "low",
+      "glob": "Library/Caches/CocoaPods",
+      "label": "cocoapods spec cache",
+      "regen": "pod install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "node-gyp",
+      "tier": "low",
+      "glob": "Library/Caches/node-gyp",
+      "label": "node-gyp headers",
+      "regen": "re-downloaded on build",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "puppeteer",
+      "tier": "low",
+      "glob": ".cache/puppeteer",
+      "label": "puppeteer chromium builds",
+      "regen": "re-downloaded on use",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "playwright",
+      "tier": "low",
+      "glob": "Library/Caches/ms-playwright",
+      "label": "playwright browsers",
+      "regen": "npx playwright install",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "playwright-go",
+      "tier": "low",
+      "glob": "Library/Caches/ms-playwright-go",
+      "label": "playwright-go browsers",
+      "regen": "re-downloaded on use",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "prisma",
+      "tier": "low",
+      "glob": ".cache/prisma",
+      "label": "prisma engines",
+      "regen": "re-downloaded on generate",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "hardhat",
+      "tier": "low",
+      "glob": "Library/Caches/hardhat-nodejs",
+      "label": "hardhat compiler cache",
+      "regen": "re-downloaded on compile",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "homebrew-cache",
+      "tier": "low",
+      "glob": "Library/Caches/Homebrew",
+      "label": "homebrew downloads",
+      "regen": "brew cleanup -s --prune=all",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "swiftpm-cache",
+      "tier": "low",
+      "glob": "Library/Caches/org.swift.swiftpm",
+      "label": "SwiftPM dependency cache",
+      "regen": "swift build",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "deno-cache",
+      "tier": "low",
+      "glob": "Library/Caches/deno",
+      "label": "deno module cache",
+      "regen": "deno cache",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "flutter-tool",
+      "tier": "low",
+      "glob": ".dart-tool",
+      "label": "dart tool state",
+      "regen": "flutter pub get",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "codex-runtimes",
+      "tier": "low",
+      "glob": ".cache/codex-runtimes",
+      "label": "codex runtime installs",
+      "regen": "re-downloaded by codex",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "codex-packages",
+      "tier": "medium",
+      "glob": ".codex/packages",
+      "label": "codex packages",
+      "regen": "re-downloaded by codex",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "claude-vm-bundles",
+      "tier": "medium",
+      "glob": "Library/Application Support/Claude/vm_bundles",
+      "label": "Claude Desktop VM images",
+      "regen": "re-downloaded on demand (large)",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "antigravity-backup",
+      "tier": "medium",
+      "glob": ".gemini/antigravity-backup",
+      "label": "stale Antigravity IDE backup",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "vscode-vsix",
+      "tier": "low",
+      "glob": "Library/Application Support/Code/CachedExtensionVSIXs",
+      "label": "VS Code extension installers (already installed)",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "vscode-cacheddata",
+      "tier": "low",
+      "glob": "Library/Application Support/Code/CachedData",
+      "label": "VS Code compiled JS cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "xcode-deriveddata",
+      "tier": "low",
+      "glob": "Library/Developer/Xcode/DerivedData",
+      "label": "Xcode DerivedData",
+      "regen": "rebuilt on next build",
+      "children": true,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "xcode-logs",
+      "tier": "low",
+      "glob": "Library/Developer/Xcode/iOS Device Logs",
+      "label": "device logs",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "simulator-caches",
+      "tier": "low",
+      "glob": "Library/Developer/CoreSimulator/Caches",
+      "label": "simulator caches",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "simulator-devices",
+      "tier": "high",
+      "glob": "Library/Developer/CoreSimulator/Devices",
+      "label": "simulator devices + their data",
+      "regen": "xcrun simctl delete unavailable (safer)",
+      "children": false,
+      "warn": "wipes simulator state; prefer `xcrun simctl delete unavailable`",
+      "system": false
+    },
+    {
+      "id": "xcode-archives",
+      "tier": "high",
+      "glob": "Library/Developer/Xcode/Archives",
+      "label": "Xcode archives (shipped builds, dSYMs)",
+      "regen": "cannot be regenerated",
+      "children": false,
+      "warn": "contains dSYMs needed to symbolicate released builds",
+      "system": false
+    },
+    {
+      "id": "app-cache",
+      "tier": "low",
+      "glob": "Library/Application Support/*/Cache",
+      "label": "app HTTP cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "app-code-cache",
+      "tier": "low",
+      "glob": "Library/Application Support/*/Code Cache",
+      "label": "app code cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "app-gpu-cache",
+      "tier": "low",
+      "glob": "Library/Application Support/*/GPUCache",
+      "label": "app GPU shader cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "app-cachestorage",
+      "tier": "low",
+      "glob": "Library/Application Support/*/Service Worker/CacheStorage",
+      "label": "service worker cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "container-cache",
+      "tier": "low",
+      "glob": "Library/Containers/*/Data/Library/Caches",
+      "label": "sandboxed app cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "go-modcache",
+      "tier": "medium",
+      "glob": "go/pkg/mod",
+      "label": "go module cache",
+      "regen": "go mod download",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "maven-repo",
+      "tier": "medium",
+      "glob": ".m2/repository",
+      "label": "maven local repository",
+      "regen": "mvn re-downloads",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "nuget-packages",
+      "tier": "medium",
+      "glob": ".nuget/packages",
+      "label": "NuGet global packages",
+      "regen": "dotnet restore",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "pub-cache",
+      "tier": "medium",
+      "glob": ".pub-cache",
+      "label": "Dart/Flutter package cache",
+      "regen": "flutter pub get",
+      "children": false,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "rustup-toolchains",
+      "tier": "high",
+      "glob": ".rustup/toolchains",
+      "label": "rust toolchains",
+      "regen": "rustup toolchain install <ver>",
+      "children": false,
+      "warn": "prefer `rustup toolchain uninstall <old>` to keep the active one",
+      "system": false
+    },
+    {
+      "id": "docker-modules",
+      "tier": "high",
+      "glob": ".docker/modules",
+      "label": "Docker Desktop modules",
+      "regen": "reinstalled by Docker Desktop",
+      "children": false,
+      "warn": "only when Docker is not running",
+      "system": false
+    },
+    {
+      "id": "xdg-cache",
+      "tier": "low",
+      "glob": ".cache",
+      "label": "XDG cache entries",
+      "regen": "app-specific",
+      "children": true,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "macos-user-cache",
+      "tier": "low",
+      "glob": "Library/Caches",
+      "label": "macOS per-app user caches",
+      "regen": "rebuilt on launch",
+      "children": true,
+      "warn": "",
+      "system": false
+    },
+    {
+      "id": "trash",
+      "tier": "medium",
+      "glob": ".Trash",
+      "label": "Trash contents",
+      "regen": "cannot be undone",
+      "children": true,
+      "warn": "this is your Trash - check it before emptying",
+      "system": false
+    },
+    {
+      "id": "system-cache",
+      "tier": "high",
+      "glob": "/Library/Caches",
+      "label": "system-wide caches",
+      "regen": "rebuilt by macOS",
+      "children": true,
+      "warn": "requires sudo; some entries are in use",
+      "system": true
+    },
+    {
+      "id": "tmp-folders",
+      "tier": "high",
+      "glob": "/private/var/folders/*/*/C",
+      "label": "per-user temp caches",
+      "regen": "rebuilt by macOS",
+      "children": false,
+      "warn": "requires sudo; may be in active use",
+      "system": true
+    }
+  ],
+  "artifacts": [
+    {
+      "dir_name": ".angular",
+      "id": "angular-cache",
+      "tier": "low",
+      "label": "Angular build cache",
+      "regen": "ng build",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".astro",
+      "id": "astro",
+      "tier": "low",
+      "label": "Astro build output",
+      "regen": "astro build",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".dart_tool",
+      "id": "dart-tool",
+      "tier": "low",
+      "label": "Dart tool cache",
+      "regen": "flutter pub get",
+      "markers": [
+        "pubspec.yaml"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".expo",
+      "id": "expo-cache",
+      "tier": "low",
+      "label": "Expo cache",
+      "regen": "expo start",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".gradle",
+      "id": "project-gradle",
+      "tier": "low",
+      "label": "project Gradle cache",
+      "regen": "gradle build",
+      "markers": [
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".mypy_cache",
+      "id": "mypy-cache",
+      "tier": "low",
+      "label": "mypy cache",
+      "regen": "regenerated on check",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".next",
+      "id": "next-build",
+      "tier": "low",
+      "label": "Next.js build cache",
+      "regen": "next build",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".nox",
+      "id": "nox",
+      "tier": "low",
+      "label": "nox environments",
+      "regen": "nox recreates",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".nuxt",
+      "id": "nuxt-build",
+      "tier": "low",
+      "label": "Nuxt build output",
+      "regen": "nuxt build",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".parcel-cache",
+      "id": "parcel-cache",
+      "tier": "low",
+      "label": "Parcel cache",
+      "regen": "parcel build",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".pytest_cache",
+      "id": "pytest-cache",
+      "tier": "low",
+      "label": "pytest cache",
+      "regen": "regenerated on test run",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".ruff_cache",
+      "id": "ruff-cache",
+      "tier": "low",
+      "label": "ruff cache",
+      "regen": "regenerated on lint",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".svelte-kit",
+      "id": "sveltekit",
+      "tier": "low",
+      "label": "SvelteKit build output",
+      "regen": "vite build",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".terraform",
+      "id": "terraform",
+      "tier": "medium",
+      "label": "Terraform providers/modules",
+      "regen": "terraform init",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".tox",
+      "id": "tox",
+      "tier": "low",
+      "label": "tox environments",
+      "regen": "tox recreates",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".turbo",
+      "id": "turbo-cache",
+      "tier": "low",
+      "label": "Turborepo cache",
+      "regen": "turbo run",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".venv",
+      "id": "venv",
+      "tier": "medium",
+      "label": "Python virtualenv",
+      "regen": "python -m venv .venv && pip install -r requirements.txt",
+      "markers": [],
+      "contains": [
+        "pyvenv.cfg"
+      ],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": ".vite",
+      "id": "vite-cache",
+      "tier": "low",
+      "label": "Vite cache",
+      "regen": "vite",
+      "markers": [
+        "package.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "DerivedData",
+      "id": "project-deriveddata",
+      "tier": "low",
+      "label": "Xcode DerivedData",
+      "regen": "rebuilt on build",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "Pods",
+      "id": "cocoapods",
+      "tier": "medium",
+      "label": "CocoaPods dependencies",
+      "regen": "pod install",
+      "markers": [
+        "Podfile"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "__pycache__",
+      "id": "pycache",
+      "tier": "low",
+      "label": "Python bytecode",
+      "regen": "regenerated on import",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "_build",
+      "id": "elixir-build",
+      "tier": "low",
+      "label": "Elixir/OCaml build output",
+      "regen": "mix compile",
+      "markers": [
+        "mix.exs",
+        "dune-project"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "build",
+      "id": "build-dir",
+      "tier": "medium",
+      "label": "build output (git-ignored)",
+      "regen": "project build command",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": true
+    },
+    {
+      "dir_name": "deps",
+      "id": "elixir-deps",
+      "tier": "medium",
+      "label": "Elixir dependencies",
+      "regen": "mix deps.get",
+      "markers": [
+        "mix.exs"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "dist",
+      "id": "dist-dir",
+      "tier": "medium",
+      "label": "dist output (git-ignored)",
+      "regen": "project build command",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": true
+    },
+    {
+      "dir_name": "elm-stuff",
+      "id": "elm-stuff",
+      "tier": "low",
+      "label": "Elm build artifacts",
+      "regen": "elm make",
+      "markers": [
+        "elm.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "env",
+      "id": "venv",
+      "tier": "medium",
+      "label": "Python virtualenv",
+      "regen": "python -m venv env && pip install -r requirements.txt",
+      "markers": [],
+      "contains": [
+        "pyvenv.cfg"
+      ],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "node_modules",
+      "id": "node-modules",
+      "tier": "medium",
+      "label": "installed npm packages",
+      "regen": "npm install / bun install",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "obj",
+      "id": "dotnet-obj",
+      "tier": "low",
+      "label": "MSBuild intermediates (git-ignored)",
+      "regen": "dotnet build",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": true
+    },
+    {
+      "dir_name": "out",
+      "id": "out-dir",
+      "tier": "medium",
+      "label": "out output (git-ignored)",
+      "regen": "project build command",
+      "markers": [],
+      "contains": [],
+      "need_gitignored": true
+    },
+    {
+      "dir_name": "target",
+      "id": "rust-target",
+      "tier": "low",
+      "label": "Rust build output",
+      "regen": "cargo build",
+      "markers": [
+        "Cargo.toml"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "target",
+      "id": "maven-target",
+      "tier": "low",
+      "label": "Maven build output",
+      "regen": "mvn package",
+      "markers": [
+        "pom.xml"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "vendor",
+      "id": "composer-vendor",
+      "tier": "medium",
+      "label": "Composer dependencies",
+      "regen": "composer install",
+      "markers": [
+        "composer.json"
+      ],
+      "contains": [],
+      "need_gitignored": false
+    },
+    {
+      "dir_name": "venv",
+      "id": "venv",
+      "tier": "medium",
+      "label": "Python virtualenv",
+      "regen": "python -m venv venv && pip install -r requirements.txt",
+      "markers": [],
+      "contains": [
+        "pyvenv.cfg"
+      ],
+      "need_gitignored": false
+    }
+  ]
+}
