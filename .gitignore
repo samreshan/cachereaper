@@ -12,3 +12,7 @@ dist/
 
 # rust
 target/
+.gstack/
+
+# generated dev snapshot
+gui/dist/snapshot.json

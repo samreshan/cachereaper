@@ -34,6 +34,10 @@ pub struct Node {
     pub depth: u16,
     /// true when the directory could not be read (permissions)
     pub unreadable: bool,
+    /// Names of *marker* files directly in this directory (Cargo.toml,
+    /// package.json, ...). Only names the rules actually ask about are kept, so
+    /// this stays a handful of strings per project instead of 1M filenames.
+    pub markers: Vec<String>,
 }
 
 impl Node {
@@ -49,6 +53,7 @@ impl Node {
             newest_mtime: 0,
             depth,
             unreadable: false,
+            markers: Vec::new(),
         }
     }
 }
@@ -107,6 +112,8 @@ struct Shared {
     dirs: AtomicU64,
     unreadable: AtomicU64,
     root_dev: u64,
+    /// file names worth remembering, supplied by the rule table
+    markers: std::collections::HashSet<String>,
 }
 
 /// Bytes this entry actually occupies on disk.
@@ -135,8 +142,34 @@ pub fn scan(root: &Path, threads: usize) -> std::io::Result<Tree> {
     scan_with_progress(root, threads, |_, _| {})
 }
 
+/// Scan while remembering which marker files (Cargo.toml, package.json, ...)
+/// each directory holds, so rule matching afterwards needs no second pass.
+pub fn scan_with_markers<F>(
+    root: &Path,
+    threads: usize,
+    markers: std::collections::HashSet<String>,
+    progress: F,
+) -> std::io::Result<Tree>
+where
+    F: Fn(u64, u64) + Send + Sync,
+{
+    scan_inner(root, threads, markers, progress)
+}
+
 /// `progress(files_seen, bytes_seen)` is called from worker threads; keep it cheap.
 pub fn scan_with_progress<F>(root: &Path, threads: usize, progress: F) -> std::io::Result<Tree>
+where
+    F: Fn(u64, u64) + Send + Sync,
+{
+    scan_inner(root, threads, Default::default(), progress)
+}
+
+fn scan_inner<F>(
+    root: &Path,
+    threads: usize,
+    markers: std::collections::HashSet<String>,
+    progress: F,
+) -> std::io::Result<Tree>
 where
     F: Fn(u64, u64) + Send + Sync,
 {
@@ -167,6 +200,7 @@ where
         dirs: AtomicU64::new(1),
         unreadable: AtomicU64::new(0),
         root_dev: root_md.dev(),
+        markers,
     });
 
     let progress = Arc::new(progress);
@@ -227,6 +261,7 @@ fn worker<F: Fn(u64, u64)>(shared: &Shared, progress: &F) {
         let mut own_files = 0u32;
         let mut newest = 0i64;
         let mut subdirs: Vec<(String, PathBuf)> = Vec::new();
+        let mut markers: Vec<String> = Vec::new();
         let mut unreadable = false;
 
         match std::fs::read_dir(&path) {
@@ -252,6 +287,13 @@ fn worker<F: Fn(u64, u64)>(shared: &Shared, progress: &F) {
                     } else {
                         own_size += entry_size(&md);
                         own_files += 1;
+                        if !shared.markers.is_empty() {
+                            let name = entry.file_name();
+                            let name = name.to_string_lossy();
+                            if shared.markers.contains(name.as_ref()) {
+                                markers.push(name.into_owned());
+                            }
+                        }
                     }
                 }
             }
@@ -265,6 +307,7 @@ fn worker<F: Fn(u64, u64)>(shared: &Shared, progress: &F) {
             node.own_files = own_files;
             node.newest_mtime = newest;
             node.unreadable = unreadable;
+            node.markers = std::mem::take(&mut markers);
             let depth = node.depth;
 
             let mut new_tasks = Vec::with_capacity(subdirs.len());

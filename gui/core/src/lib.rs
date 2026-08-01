@@ -5,10 +5,12 @@
 //! full desktop toolchain to check the parts that decide what gets deleted.
 
 pub mod guard;
+pub mod rules;
 pub mod scan;
 
 pub use guard::{path_is_protected, validate_for_delete, Target};
-pub use scan::{default_threads, scan, scan_with_progress, Node, ScanStats, Tree, NONE};
+pub use rules::{all_findings, marker_vocabulary, Finding};
+pub use scan::{default_threads, scan_with_markers, scan, scan_with_progress, Node, ScanStats, Tree, NONE};
 
 /// Human-readable byte sizes, matching the CLI's `human()` formatting.
 pub fn human(bytes: u64) -> String {
