@@ -14,7 +14,12 @@ import { squarify, human } from "./treemap.js";
 // blocks. You cannot click a 2px rectangle anyway.
 const MIN_CELL = 10;
 const MAX_DEPTH = 10;
-const GAP = 1; // px between sibling blocks
+// No gutter: blocks butt against each other and the hairline edge drawn in
+// paintLeaf is the only separator. A gutter is applied once per level of
+// nesting on the way down, so at 1px a block six levels deep had been inset six
+// times — the channels that opened up read as empty space rather than as
+// structure, and cost area that the blocks themselves should have had.
+const GAP = 0;
 
 const canvas = document.getElementById("map");
 const ctx = canvas.getContext("2d", { alpha: false });
@@ -349,7 +354,7 @@ function drawNode(index, rect, depth) {
   for (const cell of squarify(big, rect)) {
     const item = cell.item;
     if (item.kind === "child" && cell.w >= MIN_CELL && cell.h >= MIN_CELL) {
-      drawNode(item.node, inset(cell), depth + 1);
+      drawNode(item.node, GAP ? inset(cell) : cell, depth + 1);
     } else {
       const owner = item.kind === "child" ? item.node : index;
       paintLeaf(owner, cell, depth + 1, item.kind === "rest" ? item.count : 0, item.kind);
@@ -357,7 +362,13 @@ function drawNode(index, rect, depth) {
   }
 }
 
-/** A small uniform gutter is what makes the map read as soft rather than dense. */
+/**
+ * Optional gutter, off by default — see GAP.
+ *
+ * Kept because it is the only knob for loosening the map again, but note it is
+ * applied per level of nesting on the way down, so the visible channel is the
+ * gutter times the depth, not the gutter.
+ */
 function inset(cell) {
   const px = Math.min(GAP, cell.w / 4, cell.h / 4);
   return {
@@ -394,8 +405,12 @@ function paintLeaf(index, rect, depth, restCount = 0, kind = "child") {
   ctx.fillStyle = hsl(base);
   ctx.fill();
 
-  if (rect.w > 3 && rect.h > 3) {
-    ctx.strokeStyle = isDark() ? "rgba(0,0,0,0.35)" : "rgba(0,0,0,0.13)";
+  // With no gutter this edge is the whole grid, so it is a darker shade of the
+  // block's own colour rather than a flat black wash: a fixed alpha that reads
+  // correctly over a pale green leaf is invisible over a dark grey one, and the
+  // map has both on screen at once.
+  if (rect.w > 2 && rect.h > 2) {
+    ctx.strokeStyle = hsl(base, isDark() ? -9 : -14);
     ctx.lineWidth = 1;
     ctx.stroke();
   }
