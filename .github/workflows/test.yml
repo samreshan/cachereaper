@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  cli:
+    name: CLI (${{ matrix.os }}, py${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
@@ -18,15 +19,65 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Configure git for gitignore-gating tests
+      - name: Configure git for the gitignore-gating tests
         run: |
           git config --global user.name "ci"
           git config --global user.email "ci@example.com"
           git config --global init.defaultBranch main
-      - name: Run tests
-        run: python -m unittest discover -s tests -v
+      - run: python -m unittest discover -s tests -v
       - name: Smoke-test the CLI
         run: |
           python cachereaper.py --version
           python cachereaper.py tools
           python cachereaper.py scan --no-projects --tier high
+
+  core:
+    name: Scanner + guards (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Configure git for the gitignore-gating tests
+        run: |
+          git config --global user.name "ci"
+          git config --global user.email "ci@example.com"
+          git config --global init.defaultBranch main
+      - run: cargo test --manifest-path gui/core/Cargo.toml
+      - run: cargo clippy --manifest-path gui/core/Cargo.toml -- -D warnings
+      - name: Treemap layout tests
+        run: node gui/tests/treemap.test.mjs
+
+  rules-drift:
+    name: Generated rules match the CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The Python rule table is the single definition; the GUI embeds a
+      # generated copy. If they diverge the GUI could claim something the CLI
+      # would refuse, so this check is load-bearing rather than cosmetic.
+      - name: Regenerate and diff
+        run: |
+          python cachereaper.py dump-rules > /tmp/rules.json
+          diff -u gui/rules.generated.json /tmp/rules.json \
+            || { echo "::error::gui/rules.generated.json is stale — run: python cachereaper.py dump-rules > gui/rules.generated.json"; exit 1; }
+
+  desktop:
+    name: Desktop shell builds
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the Tauri binary
+        run: cargo build --release --manifest-path gui/src-tauri/Cargo.toml

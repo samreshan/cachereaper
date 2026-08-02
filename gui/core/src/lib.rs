@@ -5,10 +5,12 @@
 //! full desktop toolchain to check the parts that decide what gets deleted.
 
 pub mod guard;
+pub mod purge;
 pub mod rules;
 pub mod scan;
 
 pub use guard::{path_is_protected, validate_for_delete, Target};
+pub use purge::{allowed_roots, purge, PurgeResult};
 pub use rules::{all_findings, marker_vocabulary, Finding};
 pub use scan::{default_threads, scan_with_markers, scan, scan_with_progress, Node, ScanStats, Tree, NONE};
 

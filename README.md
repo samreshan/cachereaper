@@ -153,15 +153,71 @@ For things where a vendor command is genuinely safer than `rm -rf` — Docker,
 Colima, rustup, simctl, Time Machine local snapshots — `cachereaper tools` prints
 the command instead of offering to delete the directory.
 
+## The desktop app
+
+A treemap of every file on disk, with the risk tiers painted on top.
+GrandPerspective shows you what is big; cachereaper shows you what is big **and**
+safe to delete.
+
+```bash
+./gui/dev.sh ~/Programming      # run the map in a browser, no desktop build
+./gui/dev.sh                    # your whole home directory
+
+cargo build --release --manifest-path gui/src-tauri/Cargo.toml
+./gui/src-tauri/target/release/cachereaper-gui
+```
+
+| | |
+| --- | --- |
+| click | drill into a folder |
+| backspace / **↑** | go back up |
+| **Select** mode (or `s`) | click blocks to select, drag a box to select many |
+| ⌥click in Select mode | drill in instead of selecting |
+| ⌘click in Explore mode | select the nearest claimed folder |
+| esc | clear the selection |
+
+Colour carries one meaning: risk tiers stay saturated, and anything the rules did
+not claim is drained to a neutral grey so it recedes. The map answers "what can I
+delete" rather than "what is on my disk".
+
+Dragging a box across a `node_modules` means *that folder*, not *those 400 files*:
+when every block under a folder falls inside the box, the folder replaces them.
+
+### Architecture, and the one thing worth knowing
+
+The rule table lives in `cachereaper.py` and nowhere else. `cachereaper dump-rules`
+generates `gui/rules.generated.json`, which the Rust core embeds at compile time,
+and CI fails if the committed copy drifts. The *guards* are logic rather than data,
+so they exist in both languages — held honest by `tests/guard_vectors.json`, which
+both the Python suite and `cargo test` assert against. A guard changed in one
+language and not the other fails CI.
+
+Deletion from the GUI goes through the same `validate_for_delete`, the same
+allowed-roots confinement, and the same `~/.cachereaper/reap-*.jsonl` audit log as
+the CLI. It runs over Tauri IPC, so there is no listening socket.
+
+**Blocks the rules do not claim can be selected**, which is a deliberate widening
+of the CLI's "nothing without a rule" stance. They are labelled *unclassified*, the
+panel warns that there is no restore path for them, and deleting them requires
+typing a confirmation phrase exactly as high-risk findings do.
+
+Scanning is a parallel walk building an arena tree of directories only, with file
+lists read on demand. Measured on a 1.05M-file home directory: 1 thread 144s,
+4 threads 28.6s, **8 threads 13.2s** (~80k files/s); more threads regress on
+contention.
+
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v          # CLI
+cargo test --manifest-path gui/core/Cargo.toml    # scanner, guards, deletion
+node gui/tests/treemap.test.mjs                   # treemap layout
 ```
 
 Covers the path guards, delete-time re-validation, nested-candidate dedupe,
-marker gating, gitignore gating, selection state, and a real end-to-end scan and
-delete against a temporary fixture tree.
+marker gating, gitignore gating, selection state, an end-to-end scan and delete
+against fixture trees, and the squarified layout (proportional areas, non-overlap,
+containment, aspect ratio, degenerate input).
 
 ## Contributing
 

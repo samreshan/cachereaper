@@ -16,3 +16,7 @@ target/
 
 # generated dev snapshot
 gui/dist/snapshot.json
+
+# tauri build output
+gui/src-tauri/target/
+gui/src-tauri/gen/schemas/
