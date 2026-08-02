@@ -81,6 +81,7 @@ async function load(path) {
       await listen("scan-progress", (e) => {
         const { files, bytes } = e.payload;
         setStatus(`scanning… ${files.toLocaleString()} files, ${human(bytes)}`);
+        setScanProgress(files, bytes);
       });
       progressBound = true;
     }
@@ -102,6 +103,18 @@ function setStatus(text) {
   }
   statusEl.hidden = false;
   statusEl.textContent = text;
+}
+
+/**
+ * Live counts under the scanning bar.
+ *
+ * The core only emits every 20,000 files, so a small folder can finish without
+ * ever firing one. That is why the curtain opens on "counting…" rather than on
+ * "0 files", which would look stuck for the whole of a short scan.
+ */
+function setScanProgress(files, bytes) {
+  document.getElementById("scan-counts").textContent =
+    `${files.toLocaleString()} files · ${human(bytes)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -913,11 +926,18 @@ let scanning = false;
 const onboarding = document.getElementById("onboarding");
 const onboardError = document.getElementById("onboard-error");
 
+const scanningEl = document.getElementById("scanning");
+
 async function runScan(path) {
   if (scanning) return;
   scanning = true;
   document.body.classList.add("busy");
   onboardError.hidden = true;
+
+  document.getElementById("scan-path").textContent = path || "your home folder";
+  document.getElementById("scan-counts").textContent = "counting…";
+  scanningEl.hidden = false;
+
   setStatus("scanning…");
   try {
     applyPayload(await load(path));
@@ -931,6 +951,7 @@ async function runScan(path) {
     console.error(err);
   } finally {
     scanning = false;
+    scanningEl.hidden = true;
     document.body.classList.remove("busy");
   }
 }

@@ -42,5 +42,7 @@ echo
 echo "  app: $OUT/macos/cachereaper.app"
 echo "  dmg: $(ls "$OUT"/dmg/*.dmg 2>/dev/null | head -1)"
 echo
-echo "  The build is ad-hoc signed, not notarised. First launch on another Mac"
-echo "  needs right-click -> Open, or: xattr -dr com.apple.quarantine <app>"
+echo "  Ad-hoc signed, not notarised. macOS 15+ has no right-click -> Open for"
+echo "  this any more, so clear the quarantine flag after copying it somewhere:"
+echo "      xattr -dr com.apple.quarantine /Applications/cachereaper.app"
+echo "  install.sh in the repo root does that as part of installing."

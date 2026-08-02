@@ -484,6 +484,89 @@ button.primary:hover:not(:disabled) {
 }
 #onboard-error[hidden] { display: none; }
 
+/* ------------------------------------------------------------- scanning -- */
+
+/* Above the onboarding sheet, so choosing a folder hands straight over to this
+   without a frame of empty map in between. */
+#scanning {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+#scanning[hidden] { display: none; }
+
+#scanning .sheet { width: 320px; text-align: center; }
+
+#scanning img {
+  width: 42px;
+  height: auto;
+  margin-bottom: 16px;
+  animation: reaper-bob 1.5s ease-in-out infinite alternate;
+}
+@keyframes reaper-bob {
+  from { transform: translateY(0); }
+  to   { transform: translateY(-7px); }
+}
+
+#scanning h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+#scanning .path {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+
+/* Indeterminate on purpose: the walk cannot know its own total until it has
+   finished, so a percentage would be a guess. The counts underneath are the
+   honest progress signal. */
+.bar {
+  position: relative;
+  height: 3px;
+  margin: 18px 0 11px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+.bar i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 38%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: bar-sweep 1.15s ease-in-out infinite;
+}
+@keyframes bar-sweep {
+  from { left: -38%; }
+  to   { left: 100%; }
+}
+
+#scan-counts {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #scanning img { animation: none; }
+  .bar i { animation: none; left: 0; width: 100%; opacity: 0.45; }
+}
+
 /* -------------------------------------------------------------- floating -- */
 
 #tooltip {

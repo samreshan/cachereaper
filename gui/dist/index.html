@@ -116,6 +116,18 @@
       </div>
     </div>
 
+    <!-- Covers the map for the whole walk. The scan replaces the tree wholesale,
+         so there is nothing underneath worth interacting with while it runs. -->
+    <div id="scanning" hidden>
+      <div class="sheet">
+        <img src="reaper.svg" alt="" width="32" height="33" />
+        <h2>Reading the tree</h2>
+        <p id="scan-path" class="path"></p>
+        <div class="bar"><i></i></div>
+        <p id="scan-counts">counting…</p>
+      </div>
+    </div>
+
     <div id="tooltip" hidden></div>
     <div id="status">scanning…</div>
 

@@ -61,22 +61,50 @@ GUI with `sudo`. cachereaper takes a different position:
 
 ## Install
 
-**The desktop app** — [download the `.dmg`](https://github.com/samreshan/cachereaper/releases/latest),
-open it, drag cachereaper to Applications.
-
-The build is not signed with an Apple Developer ID, so the first launch needs one
-extra step: **right-click the app → Open → Open**. Double-clicking gives you
-"cachereaper is damaged" or "cannot be opened", which is Gatekeeper's message for
-*unsigned*, not for *broken*. If macOS still refuses, clear the quarantine flag
-that Safari attached to the download:
+**The desktop app.** One command, and it lands in `/Applications` ready to open:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/samreshan/cachereaper/main/install.sh -o install.sh
+less install.sh          # it is 60 lines, most of them comments
+bash install.sh
+```
+
+**If you download the `.dmg` by hand**, macOS will refuse to open it, and on
+macOS 15 and newer there is no right-click → Open to get around that any more —
+the only click-through left is System Settings → Privacy & Security → **Open
+Anyway**, after a launch has already failed. One command avoids the trip:
+
+```bash
+# after dragging cachereaper out of the .dmg into Applications
 xattr -dr com.apple.quarantine /Applications/cachereaper.app
 ```
 
-You only do this once. Prefer to skip it entirely? Build from source — the
-`cargo tauri build` output below is the same app, and code you compiled yourself
-is not quarantined.
+<details>
+<summary>Why macOS does this, and what the command actually does</summary>
+
+The app is signed **ad-hoc** rather than with an Apple Developer ID, because a
+Developer ID requires a paid Apple Developer Program membership. Ad-hoc is
+enough to *run* — it is what lets the binary execute on Apple Silicon at all —
+but it is not an identity, so Gatekeeper cannot attribute the app to anyone.
+
+Separately, macOS tags every browser download with a `com.apple.quarantine`
+extended attribute. Gatekeeper refuses quarantined apps that have no Developer
+ID, and reports it as *"cachereaper is damaged and can't be opened"* — which is
+its wording for *unidentified*, not for *corrupt*. Nothing is wrong with the
+download.
+
+`xattr -dr com.apple.quarantine` removes that tag. It is the same decision you
+would be making in the Privacy & Security pane, made once and up front instead
+of after a failed launch. `install.sh` does exactly this, plus the download and
+the copy.
+
+Two ways to avoid the question entirely: build from source with
+`./gui/release.sh` — code you compiled yourself is never quarantined — or use
+the CLI, which is a plain Python file and not subject to any of this.
+
+The honest fix is notarisation, which needs the $99/year membership. If that
+ever happens, the app will be signed and this section will disappear.
+</details>
 
 **The CLI** — one file, no dependencies, Python 3.9+:
 
@@ -264,8 +292,10 @@ GrandPerspective shows you what is big; cachereaper shows you what is big **and*
 safe to delete.
 
 It opens by asking what to look at rather than walking your disk uninvited —
-choose a folder, or take the whole home directory. **Scan folder…** in the
-toolbar repoints it later: an external drive, one project, `~/Library`. The
+choose a folder, or take the whole home directory. The walk then holds the
+window with a live file and byte count until it has a tree to show; a home
+directory of a million files takes about thirteen seconds. **Scan folder…** in
+the toolbar repoints it later: an external drive, one project, `~/Library`. The
 roots you actually scan are also what bounds deletion for the rest of the
 session; cachereaper will not remove anything outside `$HOME` plus those.
 
