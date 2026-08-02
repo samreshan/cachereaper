@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The frontend talks to the scanner over the app's own commands, which the ACL does not gate. The only plugin surface it needs is core: `listen` for scan-progress events, and the window/webview defaults the shell itself uses. The folder picker is deliberately absent — `pick_folder` runs the dialog from Rust, so the webview never gets permission to open dialogs on its own.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

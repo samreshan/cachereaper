@@ -1,14 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "cachereaper",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "identifier": "io.github.samreshan.cachereaper",
   "build": {
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "cachereaper",
         "width": 1280,
         "height": 820,
@@ -23,7 +25,13 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
-    "icon": ["icons/icon.png"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "category": "Utility",
     "shortDescription": "Treemap disk visualiser that knows what is safe to delete"
   }

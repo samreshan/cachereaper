@@ -18,6 +18,7 @@ use cachereaper_core::rules::{all_findings, marker_vocabulary};
 use cachereaper_core::{allowed_roots, default_threads, purge, scan_with_markers, PurgeResult, NONE};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 
 /// Roots the user has actually scanned this session. Deletion is confined to
 /// $HOME plus these, so a scan of an external volume can be cleaned but nothing
@@ -164,6 +165,45 @@ fn delete_targets(
     Ok(purge(&targets, &allowed, dry_run.unwrap_or(false)))
 }
 
+/// Open the native folder chooser and return what the user picked.
+///
+/// The dialog is driven from Rust rather than from the webview on purpose: the
+/// frontend never gets the `dialog:allow-open` permission, so the only file
+/// dialog that can ever appear is this one, asking for exactly one directory.
+/// `None` means the user cancelled, which is not an error.
+///
+/// Callback form, not `blocking_pick_folder`. The blocking variant parks the
+/// calling thread until the panel closes, and on macOS the panel itself has to
+/// be driven from the main thread — so calling it from inside the async runtime
+/// hangs with no dialog and no error. The callback hands the result back over a
+/// channel instead, leaving both the event loop and this task free.
+/// The callback form, and deliberately *not* wrapped in `run_on_main_thread`:
+/// the plugin already hands the panel to the main thread itself, and asking for
+/// it again from a closure that is already running there deadlocks — the panel
+/// never draws and this command never resolves. `blocking_pick_folder` is wrong
+/// for the same underlying reason. Test any change to this inside the built
+/// `.app`; a loose binary has no `NSBundle`, and AppKit answers panels
+/// differently without one.
+#[tauri::command]
+async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+
+    app.dialog()
+        .file()
+        .set_title("Choose a folder to scan")
+        .pick_folder(move |picked| {
+            // Capacity 1 and exactly one send, so this never blocks the thread
+            // the panel closed on.
+            let _ = tx.blocking_send(picked);
+        });
+
+    rx.recv()
+        .await
+        .flatten()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn reveal(path: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -176,8 +216,14 @@ fn reveal(path: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(Session::default())
-        .invoke_handler(tauri::generate_handler![scan_home, delete_targets, reveal])
+        .invoke_handler(tauri::generate_handler![
+            scan_home,
+            pick_folder,
+            delete_targets,
+            reveal
+        ])
         .run(tauri::generate_context!())
         .expect("failed to start cachereaper");
 }

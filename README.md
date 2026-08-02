@@ -1,4 +1,23 @@
-# cachereaper
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png" />
+    <img src="assets/logo.png" alt="cachereaper" width="440" />
+  </picture>
+</p>
+
+<p align="center">
+  <a href="https://github.com/samreshan/cachereaper/releases/latest">
+    <img src="assets/download.png" alt="Download cachereaper for macOS" width="246" />
+  </a>
+</p>
+
+<p align="center">
+  <sub>
+    Universal — Apple Silicon and Intel &nbsp;·&nbsp;
+    <a href="#install">CLI install</a> &nbsp;·&nbsp;
+    <a href="#tutorial">Tutorial</a>
+  </sub>
+</p>
 
 Find and reclaim disk space from caches and build artifacts — with a risk tier on
 every finding, an interactive picker, and guards that make it hard to delete
@@ -42,12 +61,97 @@ GUI with `sudo`. cachereaper takes a different position:
 
 ## Install
 
+**The desktop app** — [download the `.dmg`](https://github.com/samreshan/cachereaper/releases/latest),
+open it, drag cachereaper to Applications.
+
+The build is not signed with an Apple Developer ID, so the first launch needs one
+extra step: **right-click the app → Open → Open**. Double-clicking gives you
+"cachereaper is damaged" or "cannot be opened", which is Gatekeeper's message for
+*unsigned*, not for *broken*. If macOS still refuses, clear the quarantine flag
+that Safari attached to the download:
+
 ```bash
-git clone https://github.com/<you>/cachereaper
+xattr -dr com.apple.quarantine /Applications/cachereaper.app
+```
+
+You only do this once. Prefer to skip it entirely? Build from source — the
+`cargo tauri build` output below is the same app, and code you compiled yourself
+is not quarantined.
+
+**The CLI** — one file, no dependencies, Python 3.9+:
+
+```bash
+git clone https://github.com/samreshan/cachereaper
 install -m 755 cachereaper/cachereaper.py ~/.local/bin/cachereaper
 ```
 
 Or run it in place: `python3 cachereaper.py scan`.
+
+## Tutorial
+
+A first run, start to finish. Nothing here deletes anything until step 4, and
+step 4 asks first.
+
+**1. Look, without touching.** `scan` is the default command and dry-run is the
+default mode, so the bare binary is safe to type:
+
+```bash
+cachereaper
+```
+
+You get the low-risk tier only — the caches that regenerate themselves. Each row
+is `size`, `xN` if the rule matched several places, the rule id, and what it
+actually is. The `[5.0G]` after each heading is what that whole tier is worth.
+
+**2. Widen the net.** Low risk is deliberately timid. Ask for more once you have
+seen what it finds:
+
+```bash
+cachereaper scan --tier medium          # + node_modules, virtualenvs, package caches
+cachereaper scan --tier high -v         # + toolchains and simulators, with paths
+```
+
+`-v` is the flag to reach for when a number looks wrong: it prints the individual
+paths behind a rule instead of the total, so you can see *which* `node_modules`
+is 2G. Two more that pay off on a crowded disk:
+
+```bash
+cachereaper scan --tier medium --stale-days 30    # only things untouched for a month
+cachereaper scan --tier medium --min-size 100M    # only findings worth the trouble
+```
+
+**3. Pick what actually goes.** `select` opens the picker described
+[below](#picking-what-to-remove) — low-risk groups start ticked, medium and high
+start empty, so pressing `d` immediately does the conservative thing:
+
+```bash
+cachereaper select
+```
+
+**4. Reap.** `clean` prints what it is about to do and waits for you. High-risk
+findings make you type a phrase rather than `y`:
+
+```bash
+cachereaper clean --tier low            # confirms, then deletes
+cachereaper clean --tier medium --stale-days 30 --dry-run   # rehearse it first
+```
+
+Every deletion is written to `~/.cachereaper/reap-<timestamp>.jsonl` with the
+path, the rule, the byte count, and the command that puts it back.
+
+**5. Check the vendor commands.** For Docker, Colima, rustup, simctl and Time
+Machine snapshots, a vendor command is genuinely safer than `rm -rf`, so
+cachereaper prints the command instead of offering to delete the directory:
+
+```bash
+cachereaper tools
+```
+
+**6. Open the map.** The desktop app shows a folder as a treemap with the risk
+tiers painted on top — big *and* safe to delete, rather than just big. It opens
+by asking which folder; pick one, or hand it your home directory. Drill in by
+clicking, press `s` to switch to Select mode, and drag a box to grab many blocks
+at once. Full keys are in [The desktop app](#the-desktop-app).
 
 ## Usage
 
@@ -159,16 +263,29 @@ A treemap of every file on disk, with the risk tiers painted on top.
 GrandPerspective shows you what is big; cachereaper shows you what is big **and**
 safe to delete.
 
+It opens by asking what to look at rather than walking your disk uninvited —
+choose a folder, or take the whole home directory. **Scan folder…** in the
+toolbar repoints it later: an external drive, one project, `~/Library`. The
+roots you actually scan are also what bounds deletion for the rest of the
+session; cachereaper will not remove anything outside `$HOME` plus those.
+
+[Download the `.dmg`](https://github.com/samreshan/cachereaper/releases/latest),
+or build it yourself:
+
 ```bash
 ./gui/dev.sh ~/Programming      # run the map in a browser, no desktop build
 ./gui/dev.sh                    # your whole home directory
 
+./gui/release.sh                # universal .app + .dmg, ready to hand to someone
+
+# or just the binary, no bundle
 cargo build --release --manifest-path gui/src-tauri/Cargo.toml
 ./gui/src-tauri/target/release/cachereaper-gui
 ```
 
 | | |
 | --- | --- |
+| **Scan folder…** | choose a different root and rescan |
 | click | drill into a folder |
 | backspace / **↑** | go back up |
 | **Select** mode (or `s`) | click blocks to select, drag a box to select many |
@@ -195,6 +312,14 @@ language and not the other fails CI.
 Deletion from the GUI goes through the same `validate_for_delete`, the same
 allowed-roots confinement, and the same `~/.cachereaper/reap-*.jsonl` audit log as
 the CLI. It runs over Tauri IPC, so there is no listening socket.
+
+The webview's permissions are one line — `core:default` in
+`src-tauri/capabilities/default.json` — and that is the whole grant. The scanner
+and the deleter are the app's own commands, which the ACL does not gate; the
+folder chooser is deliberately *not* exposed to the frontend. `pick_folder` opens
+the dialog from Rust and returns a path, so the only file dialog the webview can
+ever cause is one asking for a single directory. It cannot open a save panel, a
+multi-select, or a file read.
 
 **Blocks the rules do not claim can be selected**, which is a deliberate widening
 of the CLI's "nothing without a rule" stance. They are labelled *unclassified*, the
@@ -225,6 +350,50 @@ New rules are the most useful contribution. A rule needs an id, a tier, a label,
 and an honest `regen` string. If the directory name is ambiguous (something that
 could plausibly be source), gate it behind a marker or `need_gitignored=True`
 rather than claiming it by name.
+
+## Brand
+
+<img src="assets/reaper.png" alt="the cachereaper mark" width="76" />
+
+A hooded reaper in a red cloak, drawn on a 32×33 pixel grid. It is the whole
+identity: the wordmark is a display script and does not survive being set at
+13px, so the app uses the mark alone and sets its name in the UI's own type.
+The lockup is for the README, the site, and release art.
+
+| | hex | role |
+| --- | --- | --- |
+| **brand** | `#ea1d1f` | the cloak. High risk, and the delete button |
+| **brand-lit** | `#fe2d28` | the cloak's lit edge. Hover only |
+| **bone** | `#fef9e2` | the mask. Type on top of the brand red |
+| **ink** | `#230f0c` | the outline. A warm near-black, not `#000` |
+
+**Red means risk, and nothing else.** The app's whole argument is that colour
+carries one meaning, so the reaper's red doubles as the danger colour instead of
+sitting next to a second, unrelated one: `--high`, the high-risk tier on the
+treemap, and the delete button are all drawn from `--brand`. Selection stays
+blue, because selecting something is not a statement about risk.
+
+Two values are tuned rather than copied, both for contrast, and both documented
+where they are set. `--high` is lifted to `#f0433c` on dark and dropped to
+`#c8181a` on light. The delete button fills with `#d81a1c` — one step down from
+the mark, because bone on `#ea1d1f` is 4.2:1 and the label is 13px; hover
+returns it to the mark's exact value.
+
+| file | what it is |
+| --- | --- |
+| `assets/reaper.svg` | the mark, traced to real `<rect>`s — 9KB, crisp at any size |
+| `assets/reaper.png` | the mark at 512px, nearest-neighbour |
+| `assets/logo.png` | full lockup, for light backgrounds |
+| `assets/logo-dark.png` | same lockup with the wordmark in bone |
+| `assets/download.png` | the README's download button. Ink ground, because a red mark on a red button disappears |
+| `gui/dist/reaper.svg` | byte-identical copy of the mark. The GUI ships a `default-src 'self'` CSP and Tauri bundles `gui/dist` only, so the file has to live inside it |
+| `gui/src-tauri/icons/` | app icon: the mark on `#15181d`, the app's own chrome |
+
+The mark is a vector trace of the original pixel art, not a copy of the vendor
+file. The supplied `.svg` exports are a base64 PNG in an `<svg>` wrapper, and the
+lockup's `.svg` sets live text in *Genius Fraud Demo* — it renders as a fallback
+font on any machine without it installed. Neither is safe to ship, so the mark
+was traced back onto its grid and the lockup is used as a raster.
 
 ## License
 

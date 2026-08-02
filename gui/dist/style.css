@@ -1,4 +1,25 @@
+/* Brand — lifted straight off the mark in assets/reaper.svg. These four values
+   are fixed; everything else in the palette is UI chrome and may be retuned.
+
+   The reaper red doubles as the danger colour rather than sitting beside one.
+   A second red would have meant two reds in a UI whose whole argument is that
+   colour carries exactly one meaning, so `--high` and the delete button are
+   drawn from the brand instead of competing with it. Blue stays the selection
+   colour: selecting something is not a risk statement. */
 :root {
+  --brand: #ea1d1f;      /* the cloak */
+  --brand-lit: #fe2d28;  /* its lit edge */
+  --bone: #fef9e2;       /* the mask */
+  --ink: #230f0c;        /* the outline */
+
+  /* One step down from the mark, because bone-on-#ea1d1f is 4.2:1 and the
+     button's label is 13px. At #d81a1c it is 4.9:1 and still unmistakably the
+     brand red. Hover goes back up to the mark's exact value. */
+  --danger: #d81a1c;
+  --danger-hover: var(--brand);
+
+  /* ------------------------------------------------------------- chrome -- */
+
   --bg: #15181d;
   --panel: #1c2027;
   --sunken: #12151a;
@@ -11,7 +32,7 @@
 
   --low: #43b877;
   --medium: #dfa62f;
-  --high: #d9564e;
+  --high: #f0433c;       /* brand red, lifted to stay legible on --bg */
   --accent: #4c9be8;
 
   --radius: 6px;
@@ -33,7 +54,7 @@
 
     --low: #1f9256;
     --medium: #9a7212;
-    --high: #c1443c;
+    --high: #c8181a;     /* brand red darkened to hold contrast on white */
     --accent: #1f6fc4;
     color-scheme: light;
   }
@@ -65,6 +86,37 @@ header {
 
 .spacer { flex: 1; }
 
+/* The mark carries the brand here, not the wordmark: the logo's display face is
+   a handwriting script that is unreadable at chrome sizes, so the lockup stays
+   in the README and the app sets its name in the UI type. */
+#brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  user-select: none;
+  padding-right: 14px;
+  margin-right: 2px;
+  border-right: 1px solid var(--line);
+  height: 100%;
+}
+#brand img {
+  width: 18px;
+  height: auto;
+  display: block;
+}
+#brand span {
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  color: var(--text);
+}
+
+/* The name is identity, not navigation — below 900px the crumbs need the room. */
+@media (max-width: 900px) {
+  #brand span { display: none; }
+  #brand { padding-right: 10px; }
+}
+
 #crumbs {
   display: flex;
   align-items: center;
@@ -89,7 +141,7 @@ header {
 #crumbs button:last-child { color: var(--text); font-weight: 600; }
 #crumbs .sep { color: var(--text-faint); }
 
-.control { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
+.control { display: flex; align-items: center; gap: 6px; color: var(--text-dim); flex: none; }
 
 select, button {
   font: inherit;
@@ -99,24 +151,102 @@ select, button {
   border-radius: var(--radius-sm);
   padding: 4px 9px;
   cursor: pointer;
+  transition: background-color 90ms ease, border-color 90ms ease, color 90ms ease;
 }
-select:hover, button:hover:not(:disabled) { border-color: var(--accent); }
-button:disabled { opacity: 0.45; cursor: default; }
+select:hover, button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--sunken); }
+button:active:not(:disabled) { background: var(--line); }
+button:disabled { opacity: 0.4; cursor: default; }
 button.ghost { background: var(--bg); }
 
-#up { width: 32px; padding: 4px 0; text-align: center; }
+/* One focus treatment for every control, and only for keyboard users — a mouse
+   click leaving a ring behind on a toolbar button reads as stuck. */
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+select:focus:not(:focus-visible) { outline: none; }
 
-/* Explore / Select — a plain segmented control, no gloss */
-.segmented { display: flex; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); overflow: hidden; }
+button.icon {
+  width: 30px;
+  padding: 4px 0;
+  text-align: center;
+  line-height: 1.1;
+}
+
+/* Scan folder — the only control that changes what the whole window is about,
+   so it gets the icon and sits ahead of the crumbs it rewrites. */
+#choose {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 4px 10px 4px 8px;
+}
+#choose svg { flex: none; opacity: 0.75; }
+#choose:hover:not(:disabled) svg { opacity: 1; }
+
+@media (max-width: 1040px) {
+  #choose span { display: none; }
+  #choose { padding: 4px 7px; }
+}
+
+/* Explore / Select. Flat, but not unstyled: the segments share one border, the
+   active one carries the accent, and the inactive one is a real hover target
+   instead of dead chrome. */
+.segmented {
+  display: flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex: none;
+}
 .segmented button {
   border: 0;
   border-radius: 0;
-  padding: 4px 12px;
+  padding: 4px 13px;
   background: var(--bg);
   color: var(--text-dim);
+  font-weight: 500;
 }
-.segmented button + button { border-left: 1px solid var(--line-strong); }
-.segmented button.on { background: var(--accent); color: #fff; font-weight: 600; }
+.segmented button + button { box-shadow: inset 1px 0 0 var(--line-strong); }
+.segmented button:hover:not(.on) { background: var(--sunken); color: var(--text); }
+.segmented button.on {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+/* The ring would be clipped by the group's overflow, so it goes inside. */
+.segmented button:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+.segmented button.on:focus-visible { box-shadow: inset 0 0 0 2px var(--bg); }
+
+/* The native select drops a platform-coloured chrome widget into a toolbar that
+   is otherwise all one palette, so it is redrawn with our own chevron. */
+.select-wrap { position: relative; display: inline-flex; }
+.select-wrap select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 24px;
+}
+.select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-top: -4px;
+  border-right: 1.5px solid var(--text-dim);
+  border-bottom: 1.5px solid var(--text-dim);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+/* Scanning: the toolbar is inert until the walk finishes, because every control
+   in it acts on a tree that is about to be replaced. */
+body.busy header button,
+body.busy header select { pointer-events: none; opacity: 0.4; }
+body.busy #map { cursor: progress; }
 
 /* ------------------------------------------------------------------ map -- */
 
@@ -210,14 +340,20 @@ body.mode-select #mode-hint { display: block; }
   line-height: 1.4;
 }
 
+/* Bone on the reaper's red — the mark's own contrast pair, on the one control
+   that actually reaps. */
 #delete {
   width: 100%;
   margin-top: 9px;
-  background: var(--high);
-  border-color: var(--high);
-  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bone);
   font-weight: 600;
   padding: 7px;
+}
+#delete:hover:not(:disabled) {
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
 }
 #delete:disabled { background: var(--bg); color: var(--text-faint); border-color: var(--line); }
 
@@ -267,6 +403,86 @@ h2 {
 #findings li.rule.on .size { color: var(--text); }
 #findings .id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #findings .count { color: var(--text-faint); font-size: 11px; }
+
+/* ----------------------------------------------------------- onboarding -- */
+
+/* Covers the whole window rather than just the map: until a folder is named
+   there is no tree, so the crumbs, the tier legend and the findings list are all
+   empty chrome that would only invite clicks that do nothing. */
+#onboarding {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 24px;
+}
+#onboarding[hidden] { display: none; }
+
+#onboarding .sheet {
+  max-width: 430px;
+  text-align: center;
+}
+#onboarding img {
+  width: 46px;
+  height: auto;
+  margin-bottom: 18px;
+}
+#onboarding h1 {
+  margin: 0 0 10px;
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+#onboarding p {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+#onboarding em { font-style: normal; color: var(--text); font-weight: 600; }
+
+#onboarding .actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin: 22px 0 20px;
+}
+#onboarding .actions button { padding: 7px 15px; }
+
+/* Blue, not the brand red: red is the risk colour everywhere else in this app,
+   and the first thing a new user sees should not be painted with it. */
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 86%, #000);
+  border-color: color-mix(in srgb, var(--accent) 86%, #000);
+}
+
+#onboarding .fineprint {
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.5;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+#onboard-error {
+  text-align: left;
+  margin-top: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--high);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--high) 12%, transparent);
+  color: var(--text);
+  font-size: 12px;
+}
+#onboard-error[hidden] { display: none; }
 
 /* -------------------------------------------------------------- floating -- */
 

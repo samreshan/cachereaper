@@ -43,10 +43,13 @@ let lastDragEnd = 0;
 // h, s, l components. Risk tiers stay saturated so they carry the eye; anything
 // the rules did not claim is deliberately drained of colour so it recedes. The
 // map should answer "what can I delete" at a glance, not "what is on my disk".
+// High risk is the brand red itself — hsl(359 83% 52%) is #ea1d1f, the reaper's
+// cloak — pulled back to 74% saturation so it does not vibrate against the
+// amber sitting next to it on the map.
 const TIER_HSL = {
   low: [148, 46, 44],
   medium: [40, 68, 48],
-  high: [4, 60, 52],
+  high: [359, 74, 51],
 };
 
 const isDark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -55,20 +58,35 @@ const isDark = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
 // data
 // ---------------------------------------------------------------------------
 
+// Requires `withGlobalTauri` in tauri.conf.json. Without it this is false inside
+// the packaged app too, and the UI silently falls back to a snapshot file that
+// only exists during browser development — which looks like a working app
+// showing stale data. Do not remove that config flag.
 const inTauri = typeof window !== "undefined" && !!window.__TAURI__;
 
-async function load() {
+// Bound once rather than per scan: `listen` registers a new handler each call,
+// so re-binding on every rescan would multiply the progress messages.
+let progressBound = false;
+
+async function load(path) {
   if (inTauri) {
     const { invoke } = window.__TAURI__.core;
-    const { listen } = window.__TAURI__.event;
-    await listen("scan-progress", (e) => {
-      const { files, bytes } = e.payload;
-      setStatus(`scanning… ${files.toLocaleString()} files, ${human(bytes)}`);
-    });
-    return invoke("scan_home");
+    if (!progressBound) {
+      const { listen } = window.__TAURI__.event;
+      await listen("scan-progress", (e) => {
+        const { files, bytes } = e.payload;
+        setStatus(`scanning… ${files.toLocaleString()} files, ${human(bytes)}`);
+      });
+      progressBound = true;
+    }
+    return invoke("scan_home", { path: path ?? null });
   }
   const res = await fetch("snapshot.json");
-  if (!res.ok) throw new Error(`snapshot.json missing (${res.status})`);
+  if (!res.ok) {
+    throw new Error(
+      "no snapshot.json — in the browser the map reads a pre-built scan. Run ./gui/dev.sh"
+    );
+  }
   return res.json();
 }
 
@@ -821,7 +839,9 @@ document.getElementById("delete").onclick = async () => {
   const { invoke } = window.__TAURI__.core;
   const result = await invoke("delete_targets", { targets });
   window.alert(`Freed ${human(result.freed)} across ${result.removed} paths.`);
-  location.reload();
+  // Rescan the same root rather than reloading the page: a reload would drop
+  // back to $HOME and throw away whichever folder the user chose.
+  runScan(state.rootPath);
 };
 
 window.addEventListener("resize", resize);
@@ -835,27 +855,95 @@ window.__cachereaper.api = { addSelection, toggleSelection, collapseToFolders, c
 // boot
 // ---------------------------------------------------------------------------
 
-load()
-  .then((data) => {
-    state.nodes = data.nodes;
-    state.rootPath = data.root_path;
-    state.stats = data.stats;
-    document.getElementById("total").textContent = human(data.stats.bytes);
-    if (data.stats.unreadable > 0) {
-      const warn = document.getElementById("warning");
-      warn.hidden = false;
-      warn.textContent =
-        `${data.stats.unreadable} directories could not be read, so their contents are ` +
-        `not counted. Grant Full Disk Access to include them.`;
-    }
-    setStatus(
-      `${data.stats.files.toLocaleString()} files · ${data.stats.dirs.toLocaleString()} dirs · ` +
-        `${(data.stats.elapsed_ms / 1000).toFixed(1)}s`
-    );
-    resize();
-    render();
-  })
-  .catch((err) => {
-    setStatus(`failed: ${err.message}`);
+function applyPayload(data) {
+  // A scan of a different root invalidates every index we were holding, so the
+  // view is reset wholesale rather than patched.
+  state.nodes = data.nodes;
+  state.rootPath = data.root_path;
+  state.stats = data.stats;
+  state.current = 0;
+  state.selected.clear();
+  state.hover = -1;
+  state.drag = null;
+
+  document.getElementById("total").textContent = human(data.stats.bytes);
+
+  const warn = document.getElementById("warning");
+  if (data.stats.unreadable > 0) {
+    warn.hidden = false;
+    warn.textContent =
+      `${data.stats.unreadable} directories could not be read, so their contents are ` +
+      `not counted. Grant Full Disk Access to include them.`;
+  } else {
+    warn.hidden = true;
+  }
+
+  setStatus(
+    `${data.stats.files.toLocaleString()} files · ${data.stats.dirs.toLocaleString()} dirs · ` +
+      `${(data.stats.elapsed_ms / 1000).toFixed(1)}s`
+  );
+  resize();
+  render();
+}
+
+/**
+ * Scan `path` (or $HOME) and swap the map over to it.
+ *
+ * Guarded by `scanning` because a second walk kicked off while the first is
+ * still running would race to call applyPayload, and the loser would leave the
+ * crumbs pointing at one root and the nodes at another.
+ */
+let scanning = false;
+
+const onboarding = document.getElementById("onboarding");
+const onboardError = document.getElementById("onboard-error");
+
+async function runScan(path) {
+  if (scanning) return;
+  scanning = true;
+  document.body.classList.add("busy");
+  onboardError.hidden = true;
+  setStatus("scanning…");
+  try {
+    applyPayload(await load(path));
+    onboarding.hidden = true;
+  } catch (err) {
+    // Stay on the onboarding sheet if we never got a tree: hiding it would
+    // reveal an empty map with no way back.
+    setStatus(null);
+    onboardError.hidden = false;
+    onboardError.textContent = err.message;
     console.error(err);
-  });
+  } finally {
+    scanning = false;
+    document.body.classList.remove("busy");
+  }
+}
+
+/** Native folder chooser. Resolves to null when the user cancels. */
+async function chooseFolder() {
+  if (scanning || !inTauri) return null;
+  const { invoke } = window.__TAURI__.core;
+  return invoke("pick_folder");
+}
+
+async function chooseAndScan() {
+  const picked = await chooseFolder();
+  if (picked) runScan(picked);
+}
+
+document.getElementById("choose").onclick = chooseAndScan;
+document.getElementById("onboard-choose").onclick = chooseAndScan;
+document.getElementById("onboard-home").onclick = () => runScan();
+
+if (!inTauri) {
+  // Browser dev mode reads a snapshot scanned ahead of time by dev.sh; there is
+  // no scanner behind the page to point at a different folder, so the app opens
+  // straight into whatever that snapshot holds.
+  for (const id of ["choose", "onboard-choose"]) {
+    const btn = document.getElementById(id);
+    btn.disabled = true;
+    btn.title = "Choosing a folder needs the desktop app — pass a path to ./gui/dev.sh instead";
+  }
+  runScan();
+}
