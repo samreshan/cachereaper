@@ -35,9 +35,20 @@ for target in aarch64-apple-darwin x86_64-apple-darwin; do
   }
 done
 
-cargo tauri build --target universal-apple-darwin --config "$CONF"
-
 OUT="$HERE/src-tauri/target/universal-apple-darwin/release/bundle"
+
+# bundle_dmg.sh builds a read-write image, mounts it, arranges the window and
+# converts it. A run that dies anywhere in the middle — or is interrupted —
+# leaves the volume mounted and the scratch image behind, and every build after
+# that fails on the leftovers rather than on anything wrong with the build. It
+# does not clean up after itself, so do it here before starting.
+for volume in $(hdiutil info | grep -o '/Volumes/dmg\.[A-Za-z0-9]*' | sort -u); do
+  echo "detaching a leftover build volume: $volume"
+  hdiutil detach "$volume" -force -quiet 2>/dev/null || true
+done
+rm -f "$OUT"/macos/rw.*.dmg "$OUT"/dmg/*.dmg
+
+cargo tauri build --target universal-apple-darwin --config "$CONF"
 echo
 echo "  app: $OUT/macos/cachereaper.app"
 echo "  dmg: $(ls "$OUT"/dmg/*.dmg 2>/dev/null | head -1)"

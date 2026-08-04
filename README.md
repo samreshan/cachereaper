@@ -113,6 +113,13 @@ It opens by asking what to look at rather than walking your disk uninvited, and
 holds the window with a live count while it scans. **Scan folder…** repoints it
 later — an external drive, one project, `~/Library`.
 
+macOS gates three folders — Desktop, Documents, Downloads — and left alone it
+raises a consent dialog for each one mid-scan, from whichever thread got there
+first. cachereaper asks for them up front instead, in one screen, with a switch
+each. Aim it at a project directory and it asks for nothing at all. Answers live
+in `~/.cachereaper/config.json`, and a folder you allowed can be handed back from
+the same screen, which resets macOS to asking again.
+
 | | |
 | --- | --- |
 | **Scan folder…** | choose a different root and rescan |
@@ -121,6 +128,7 @@ later — an external drive, one project, `~/Library`.
 | **Select** mode (or `s`) | click blocks, or drag a box to take many |
 | ⌥click in Select | drill in instead of selecting |
 | ⌘click in Explore | select the nearest claimed folder |
+| right-click · ⌘R | reveal in Finder |
 | esc | clear the selection |
 
 Colour carries one meaning: tiers stay saturated, anything unclaimed drains to
