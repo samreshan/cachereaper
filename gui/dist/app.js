@@ -96,6 +96,50 @@ async function load(path) {
   return res.json();
 }
 
+/**
+ * Stand-in for the commands behind the onboarding journey, for browser mode.
+ *
+ * Three gates in three different states, because the states are the whole
+ * design and styling them needs all of them on screen at once. Mutable so a
+ * click in the browser still moves something.
+ *
+ * Unreachable inside the packaged app, for the same reason and by the same flag
+ * as the snapshot fallback above: if `withGlobalTauri` is ever dropped from
+ * tauri.conf.json this would answer instead of the Rust, and the app would show
+ * a permissions screen made of nothing.
+ */
+function browserStub() {
+  const gates = [
+    { id: "desktop", label: "Desktop", path: "/Users/you/Desktop", state: "granted" },
+    { id: "documents", label: "Documents", path: "/Users/you/Documents", state: "unknown" },
+    { id: "downloads", label: "Downloads", path: "/Users/you/Downloads", state: "denied" },
+  ];
+  const find = (id) => gates.find((g) => g.id === id);
+  const settle = (id, state) => {
+    find(id).state = state;
+    return { ...find(id) };
+  };
+  return {
+    config_get: async () => ({ seen_onboarding: false, access: {} }),
+    access_status: async () => gates.map((g) => ({ ...g })),
+    full_disk_status: async () => "denied",
+    request_access: async ({ id }) => settle(id, "granted"),
+    revoke_access: async ({ id }) => settle(id, "unknown"),
+    open_privacy_settings: async () => {},
+    set_seen_onboarding: async () => {},
+    reveal: async () => {},
+  };
+}
+
+const stub = inTauri ? null : browserStub();
+
+function call(cmd, args) {
+  if (inTauri) return window.__TAURI__.core.invoke(cmd, args);
+  const fn = stub[cmd];
+  if (!fn) return Promise.reject(new Error(`${cmd} needs the desktop app`));
+  return fn(args ?? {});
+}
+
 function setStatus(text) {
   if (text === null) {
     statusEl.hidden = true;
@@ -607,8 +651,16 @@ function renderFindings() {
     li.innerHTML = `
       <span class="size">${human(g.size)}</span>
       <span class="id">${g.id}</span>
-      <span class="count">${g.nodes.length > 1 ? `×${g.nodes.length}` : ""}</span>`;
+      <span class="count">${g.nodes.length > 1 ? `×${g.nodes.length}` : ""}</span>
+      <button class="reveal" title="Reveal in Finder" aria-label="Reveal ${g.id} in Finder">⤴</button>`;
     li.title = g.regen ? `restore: ${g.regen}` : "";
+    // A group can stand for seventeen directories; the biggest one is the one
+    // worth opening, and it is the one the size on this row is mostly made of.
+    li.querySelector(".reveal").onclick = (e) => {
+      e.stopPropagation();
+      const biggest = g.nodes.reduce((a, b) => (sizeOf(b) > sizeOf(a) ? b : a));
+      revealPath(pathOf(biggest));
+    };
     li.onclick = () => {
       const allOn = g.nodes.every((n) => state.selected.has(n));
       for (const n of g.nodes) {
@@ -781,6 +833,72 @@ canvas.addEventListener("click", (e) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// reveal
+// ---------------------------------------------------------------------------
+
+const menuEl = document.getElementById("context-menu");
+
+/**
+ * Hand a path to Finder.
+ *
+ * The Rust side confines this to the same roots deletion is confined to, so a
+ * refusal here means the tree and the session disagree about what was scanned —
+ * worth showing rather than swallowing.
+ */
+async function revealPath(path) {
+  if (!inTauri) {
+    setStatus("Reveal in Finder needs the desktop app");
+    return;
+  }
+  try {
+    await call("reveal", { path });
+  } catch (err) {
+    setStatus(`could not reveal: ${err}`);
+  }
+}
+
+function closeMenu() {
+  menuEl.hidden = true;
+  menuEl.dataset.path = "";
+}
+
+function openMenu(x, y, path) {
+  menuEl.dataset.path = path;
+  menuEl.querySelector(".path").textContent = path;
+  menuEl.hidden = false;
+  // Measure after unhiding, then keep it inside the window: a right-click near
+  // the bottom edge is exactly where a menu wants to hang off the screen.
+  const pad = 8;
+  menuEl.style.left = `${Math.min(x, window.innerWidth - menuEl.offsetWidth - pad)}px`;
+  menuEl.style.top = `${Math.min(y, window.innerHeight - menuEl.offsetHeight - pad)}px`;
+}
+
+canvas.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const p = localPoint(e);
+  const cell = cellAt(p.x, p.y);
+  // "rest" stands for a run of siblings too small to draw, so there is no one
+  // path behind it to open.
+  if (!cell || cell.kind === "rest") {
+    closeMenu();
+    return;
+  }
+  tooltip.hidden = true;
+  openMenu(e.clientX, e.clientY, pathOf(cell.index));
+});
+
+menuEl.querySelector('[data-action="reveal"]').onclick = () => {
+  const path = menuEl.dataset.path;
+  closeMenu();
+  if (path) revealPath(path);
+};
+
+window.addEventListener("mousedown", (e) => {
+  if (!menuEl.hidden && !menuEl.contains(e.target)) closeMenu();
+});
+window.addEventListener("blur", closeMenu);
+
 function setMode(mode) {
   state.mode = mode;
   document.body.classList.toggle("mode-select", mode === "select");
@@ -797,6 +915,25 @@ for (const btn of document.querySelectorAll("#mode button")) {
 
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  // While a sheet is up there is no map to drive, and `s` would silently flip a
+  // mode the user cannot see.
+  if (!onboarding.hidden) {
+    if (e.key === "Escape" && reviewing) closeAccess();
+    return;
+  }
+
+  if ((e.metaKey || e.ctrlKey) && (e.key === "r" || e.key === "R")) {
+    // Whatever the pointer is over, else a selection of exactly one — `open -R`
+    // reveals a single path, and picking one out of many would be a guess.
+    const only = state.selected.size === 1 ? [...state.selected][0] : -1;
+    const target = state.hover >= 0 ? state.hover : only;
+    if (target >= 0) {
+      e.preventDefault();
+      revealPath(pathOf(target));
+    }
+    return;
+  }
+
   if (e.key === "Backspace" || e.key === "ArrowUp") {
     if (state.current !== 0) {
       state.current = state.nodes[state.current].p;
@@ -804,6 +941,10 @@ document.addEventListener("keydown", (e) => {
       e.preventDefault();
     }
   } else if (e.key === "Escape") {
+    if (!menuEl.hidden) {
+      closeMenu();
+      return;
+    }
     state.selected.clear();
     render();
   } else if (e.key === "s" || e.key === "S") {
@@ -896,12 +1037,16 @@ function applyPayload(data) {
 
   document.getElementById("total").textContent = human(data.stats.bytes);
 
+  // Two unrelated denials produce this number — a folder the user refused, and
+  // the ~/Library directories that have no dialog at all — and the difference
+  // decides what to do about it. Rather than guess which is which from a count,
+  // this states the fact and hands over to the sheet that knows both.
   const warn = document.getElementById("warning");
   if (data.stats.unreadable > 0) {
     warn.hidden = false;
-    warn.textContent =
+    document.getElementById("warning-text").textContent =
       `${data.stats.unreadable} directories could not be read, so their contents are ` +
-      `not counted. Grant Full Disk Access to include them.`;
+      `not counted.`;
   } else {
     warn.hidden = true;
   }
@@ -943,9 +1088,10 @@ async function runScan(path) {
     applyPayload(await load(path));
     onboarding.hidden = true;
   } catch (err) {
-    // Stay on the onboarding sheet if we never got a tree: hiding it would
-    // reveal an empty map with no way back.
+    // Come back to the journey if we never got a tree: an empty map with the
+    // sheet gone is a dead end.
     setStatus(null);
+    showStep("scope");
     onboardError.hidden = false;
     onboardError.textContent = err.message;
     console.error(err);
@@ -963,23 +1109,286 @@ async function chooseFolder() {
   return invoke("pick_folder");
 }
 
-async function chooseAndScan() {
-  const picked = await chooseFolder();
-  if (picked) runScan(picked);
+// ---------------------------------------------------------------------------
+// the journey
+// ---------------------------------------------------------------------------
+
+// Three steps, and the middle one decides what the third has to say. `intro` is
+// dropped once it has been seen: a returning user still has to name a folder,
+// but does not need the tiers explained again.
+let journey = ["intro", "scope", "access"];
+let step = "intro";
+// Tracked separately from the journey, because it has to go false the moment the
+// first scan starts. Otherwise `Scan folder…` would walk back through the access
+// step for the rest of the session, having just been through it.
+let firstRun = true;
+// null means $HOME, which is also what the scanner reads a missing path as.
+let chosenRoot = null;
+// The access step opened from the panel rather than reached in order: same
+// markup, but it ends in Done rather than in a scan.
+let reviewing = false;
+let gates = [];
+let fullDisk = "granted";
+
+const stepsNav = document.getElementById("steps");
+
+function showStep(name) {
+  step = name;
+  reviewing = reviewing && name === "access";
+  onboarding.hidden = false;
+  onboarding.classList.toggle("review", reviewing);
+  for (const section of onboarding.querySelectorAll(".step")) {
+    section.hidden = section.dataset.step !== name;
+  }
+
+  stepsNav.hidden = reviewing;
+  const dots = stepsNav.querySelector(".dots");
+  dots.innerHTML = "";
+  for (const each of journey) {
+    const dot = document.createElement("i");
+    dot.className = each === name ? "on" : "";
+    dots.append(dot);
+  }
+  document.getElementById("step-back").disabled = journey.indexOf(name) <= 0;
 }
 
-document.getElementById("choose").onclick = chooseAndScan;
-document.getElementById("onboard-choose").onclick = chooseAndScan;
-document.getElementById("onboard-home").onclick = () => runScan();
+document.getElementById("step-back").onclick = () => {
+  const at = journey.indexOf(step);
+  if (at > 0) showStep(journey[at - 1]);
+};
 
-if (!inTauri) {
-  // Browser dev mode reads a snapshot scanned ahead of time by dev.sh; there is
-  // no scanner behind the page to point at a different folder, so the app opens
-  // straight into whatever that snapshot holds.
-  for (const id of ["choose", "onboard-choose"]) {
-    const btn = document.getElementById(id);
-    btn.disabled = true;
-    btn.title = "Choosing a folder needs the desktop app — pass a path to ./gui/dev.sh instead";
+document.querySelector('[data-go="scope"]').onclick = () => showStep("scope");
+
+document.getElementById("scope-home").onclick = () => {
+  chosenRoot = null;
+  offerAccess();
+};
+
+document.getElementById("scope-choose").onclick = async () => {
+  const picked = await chooseFolder();
+  if (picked) {
+    chosenRoot = picked;
+    offerAccess();
   }
-  runScan();
+};
+
+/**
+ * Step three — or nothing at all.
+ *
+ * Skipped outright for a returning user whose gates under this root are all
+ * granted: they answered this once, and asking again is the behaviour the whole
+ * flow exists to remove. A first run always shows it, including when the answer
+ * is "nothing needed" — a project directory costing no permissions is worth
+ * seeing rather than inferring.
+ */
+async function offerAccess() {
+  try {
+    [gates, fullDisk] = await Promise.all([
+      call("access_status", { root: chosenRoot }),
+      call("full_disk_status"),
+    ]);
+  } catch (err) {
+    // The scan is what the user asked for; a permissions screen we could not
+    // build is not worth blocking it over.
+    console.error(err);
+    startScan();
+    return;
+  }
+
+  const settled = gates.every((gate) => gate.state === "granted");
+  if (settled && !firstRun) {
+    startScan();
+    return;
+  }
+  showStep("access");
+  renderAccess();
+}
+
+const SUB = {
+  unknown: "not requested",
+  granted: "allowed",
+  denied: "denied — macOS will not ask again",
+};
+
+function gateRow(gate) {
+  const li = document.createElement("li");
+  li.className = gate.state;
+  li.title = gate.path;
+
+  const what = document.createElement("div");
+  what.className = "what";
+  what.innerHTML = `<span class="name"></span><span class="sub"></span>`;
+  what.querySelector(".name").textContent = gate.label;
+  what.querySelector(".sub").textContent = SUB[gate.state] ?? gate.state;
+  li.append(what);
+
+  // A denied folder never prompts again, so a switch here would be a control
+  // that does nothing. The row hands over to the pane that can still change it.
+  if (gate.state === "denied") {
+    const open = document.createElement("button");
+    open.className = "ghost settings";
+    open.textContent = "Open Settings ↗";
+    open.onclick = () => call("open_privacy_settings", { pane: "files" }).catch(console.error);
+    li.append(open);
+  }
+
+  const toggle = document.createElement("button");
+  toggle.className = "toggle";
+  toggle.setAttribute("role", "switch");
+  toggle.setAttribute("aria-checked", String(gate.state === "granted"));
+  toggle.setAttribute("aria-label", `Allow access to ${gate.label}`);
+  toggle.disabled = gate.state === "denied";
+  toggle.onclick = () => setGate(gate, gate.state !== "granted");
+  li.append(toggle);
+  return li;
+}
+
+async function setGate(gate, allow) {
+  try {
+    const updated = allow
+      ? await call("request_access", { id: gate.id })
+      : await call("revoke_access", { id: gate.id });
+    gates = gates.map((each) => (each.id === updated.id ? updated : each));
+    renderAccess();
+  } catch (err) {
+    onboardError.hidden = false;
+    onboardError.textContent = String(err);
+  }
+}
+
+function renderAccess() {
+  const list = document.getElementById("gate-list");
+  list.innerHTML = "";
+  for (const gate of gates) list.append(gateRow(gate));
+
+  // Not one of the three, and it must not look like one: there is no dialog to
+  // raise, so it gets a way out rather than a switch.
+  const fda = document.createElement("li");
+  fda.className = `full-disk ${fullDisk}`;
+  fda.innerHTML = `<div class="what"><span class="name"></span><span class="sub"></span></div>`;
+  fda.querySelector(".name").textContent = "Everything else in ~/Library";
+  fda.querySelector(".sub").textContent =
+    fullDisk === "granted"
+      ? "Full Disk Access is on"
+      : "optional — Safari, Mail and similar need Full Disk Access";
+  const open = document.createElement("button");
+  open.className = "ghost settings";
+  open.textContent = fullDisk === "granted" ? "Settings ↗" : "Open Settings ↗";
+  open.onclick = () => call("open_privacy_settings", { pane: "full-disk" }).catch(console.error);
+  fda.append(open);
+  list.append(fda);
+
+  const askable = gates.filter((gate) => gate.state === "unknown");
+  const where = chosenRoot ? chosenRoot.split("/").pop() : "your home folder";
+
+  document.getElementById("access-title").textContent = reviewing
+    ? "Access"
+    : gates.length === 0
+      ? "Nothing to ask for"
+      : "Folders macOS asks about";
+
+  document.getElementById("access-lede").textContent =
+    gates.length === 0
+      ? `${where} holds none of the folders macOS gates, so this scan needs no permission at all.`
+      : "macOS asks before an app reads these. Answer once and it stops asking.";
+
+  document.getElementById("access-fineprint").textContent =
+    "cachereaper only ever reads them. A folder you allow can be handed back " +
+    "here later, which resets macOS to asking again.";
+
+  const allow = document.getElementById("access-allow");
+  allow.hidden = reviewing || askable.length === 0;
+  allow.textContent =
+    askable.length === 1 ? `Allow ${askable[0].label} and scan` : "Allow all and scan";
+
+  document.getElementById("access-done").textContent = reviewing
+    ? "Done"
+    : askable.length
+      ? "Scan without them"
+      : "Scan now";
+}
+
+document.getElementById("access-allow").onclick = async (e) => {
+  const button = e.currentTarget;
+  button.disabled = true;
+  // One at a time, deliberately. macOS queues its dialogs either way, and asking
+  // in a fixed order is the difference between a moment the user is walked
+  // through and three interruptions arriving from nowhere.
+  for (const gate of gates.filter((each) => each.state === "unknown")) {
+    await setGate(gate, true);
+  }
+  button.disabled = false;
+  startScan();
+};
+
+document.getElementById("access-done").onclick = () => {
+  if (reviewing) closeAccess();
+  else startScan();
+};
+
+function closeAccess() {
+  reviewing = false;
+  onboarding.classList.remove("review");
+  onboarding.hidden = true;
+}
+
+document.getElementById("review-access").onclick = async () => {
+  reviewing = true;
+  chosenRoot = state.rootPath || null;
+  try {
+    [gates, fullDisk] = await Promise.all([
+      call("access_status", { root: chosenRoot }),
+      call("full_disk_status"),
+    ]);
+  } catch (err) {
+    console.error(err);
+  }
+  showStep("access");
+  renderAccess();
+};
+
+async function startScan() {
+  // Only after the journey has actually been walked, so a run that failed part
+  // way through still explains itself next time.
+  firstRun = false;
+  call("set_seen_onboarding", { seen: true }).catch(() => {});
+  runScan(chosenRoot ?? undefined);
+}
+
+document.getElementById("choose").onclick = async () => {
+  const picked = await chooseFolder();
+  if (picked) {
+    chosenRoot = picked;
+    offerAccess();
+  }
+};
+
+async function boot() {
+  let config = { seen_onboarding: false };
+  try {
+    config = await call("config_get");
+  } catch (err) {
+    console.error(err);
+  }
+  firstRun = !config.seen_onboarding;
+  journey = config.seen_onboarding ? ["scope", "access"] : ["intro", "scope", "access"];
+  showStep(journey[0]);
+}
+
+if (inTauri) {
+  boot();
+} else {
+  // Browser dev mode reads a snapshot scanned ahead of time by dev.sh, so there
+  // is no scanner to point at a different folder.
+  for (const id of ["choose", "scope-choose"]) {
+    const button = document.getElementById(id);
+    button.disabled = true;
+    button.title = "Choosing a folder needs the desktop app — pass a path to ./gui/dev.sh instead";
+  }
+
+  // ./gui/dev.sh is for working on the map, so it opens straight into one.
+  // Add ?onboarding to the URL to work on the journey instead, against the
+  // stubbed gates above.
+  if (new URLSearchParams(location.search).has("onboarding")) boot();
+  else runScan();
 }

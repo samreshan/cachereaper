@@ -484,6 +484,182 @@ button.primary:hover:not(:disabled) {
 }
 #onboard-error[hidden] { display: none; }
 
+#onboarding .step[hidden] { display: none; }
+
+/* The tier legend, taught once before the map is ever drawn. The same four
+   colours carry the whole treemap, so learning them here is cheaper than
+   decoding them later against real data. */
+.tiers,
+.gates {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 0;
+  text-align: left;
+}
+.tiers li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.tiers b { color: var(--text); font-weight: 600; min-width: 74px; }
+.tiers span { flex: 1; }
+
+.swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+  transform: translateY(-1px);
+}
+.swatch.low { background: var(--low); }
+.swatch.medium { background: var(--medium); }
+.swatch.high { background: var(--high); }
+.swatch.none { background: var(--line-strong); }
+
+/* ---------------------------------------------------------------- access -- */
+
+.gates li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.gates li:last-child { border-bottom: 1px solid var(--line); }
+.gates .what { flex: 1; min-width: 0; }
+.gates .name { display: block; font-size: 13px; font-weight: 600; }
+.gates .sub {
+  display: block;
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gates li.granted .sub { color: var(--low); }
+.gates li.denied .sub { color: var(--medium); }
+.gates .settings { font-size: 11px; padding: 3px 7px; flex: none; }
+
+/* Full Disk Access is not one of the three and must not look like it: it has no
+   dialog to raise, so it gets a link out rather than a switch, set apart. Its
+   note wraps rather than truncating, and stays faint — this row is an option,
+   not a refusal, and amber would read as something having gone wrong. */
+.gates li.full-disk {
+  border-top: 1px solid var(--line-strong);
+  margin-top: 4px;
+}
+.gates li.full-disk .sub {
+  white-space: normal;
+  color: var(--text-faint);
+  line-height: 1.4;
+}
+
+/* A switch, because the state it shows is genuinely two-way: `tccutil` is what
+   makes the off direction real. Disabled when macOS will not act on a click —
+   a denied folder never prompts again, and the row offers Settings instead. */
+.toggle {
+  width: 32px;
+  height: 19px;
+  padding: 0;
+  flex: none;
+  border-radius: 10px;
+  background: var(--sunken);
+  border: 1px solid var(--line-strong);
+  position: relative;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+.toggle[aria-checked="true"] {
+  background: var(--low);
+  border-color: var(--low);
+}
+.toggle[aria-checked="true"]::after {
+  transform: translateX(13px);
+  background: #fff;
+}
+.toggle:disabled { opacity: 0.45; }
+
+#access-lede { font-size: 13px; }
+#access-fineprint { margin-top: 18px; }
+
+/* Opened later from the panel rather than as step three: the map is already
+   behind it and worth keeping visible, so this one dims instead of covering. */
+#onboarding.review { background: color-mix(in srgb, var(--bg) 78%, transparent); }
+#onboarding.review .sheet {
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 22px 24px;
+  box-shadow: 0 12px 34px rgb(0 0 0 / 0.28);
+}
+#onboarding.review img { display: none; }
+
+#steps {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 22px;
+}
+#steps[hidden] { display: none; }
+#steps .dots { display: flex; gap: 5px; }
+#steps .dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+#steps .dots i.on { background: var(--text-dim); }
+#step-back:disabled { opacity: 0.25; }
+
+/* -------------------------------------------------------- context menu -- */
+
+#context-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 190px;
+  /* Capped, or a deep path renders as one very long line and the menu ends up
+     wider than the panel it is covering. */
+  max-width: 320px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.3);
+}
+#context-menu[hidden] { display: none; }
+#context-menu .path {
+  margin: 0 0 4px;
+  padding: 4px 7px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+#context-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  font-size: 12px;
+}
+#context-menu button:hover { background: var(--sunken); }
+
 /* ------------------------------------------------------------- scanning -- */
 
 /* Above the onboarding sheet, so choosing a folder hands straight over to this
@@ -606,3 +782,23 @@ button.primary:hover:not(:disabled) {
   font-size: 12px;
   line-height: 1.45;
 }
+#warning[hidden] { display: none; }
+#warning p { margin: 0 0 8px; }
+#warning button { font-size: 12px; }
+
+/* Reveal sits on the row rather than beside it: the findings list is already
+   dense, and a permanently visible second control on every line would compete
+   with the size, which is what the eye is actually scanning for. */
+#findings li.rule .reveal {
+  flex: none;
+  padding: 1px 5px;
+  font-size: 11px;
+  line-height: 1.3;
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  opacity: 0;
+}
+#findings li.rule:hover .reveal { opacity: 1; }
+#findings li.rule .reveal:hover { color: var(--text); background: var(--line); }
+#findings li.rule .reveal:focus-visible { opacity: 1; }

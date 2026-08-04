@@ -87,33 +87,97 @@
         <h2>Findings</h2>
         <ul id="findings"></ul>
 
-        <p id="warning" hidden></p>
+        <!-- Two different denials land here: a folder the user refused, which
+             System Settings can undo, and the ~/Library directories that have no
+             dialog at all. The button opens the one sheet that explains both. -->
+        <div id="warning" hidden>
+          <p id="warning-text"></p>
+          <button id="review-access" class="ghost">Review access</button>
+        </div>
       </aside>
     </main>
 
-    <!-- Shown until the first scan finishes. Nothing is walked until the user
-         names a folder, so launching the app costs nothing. -->
-    <div id="onboarding">
+    <!-- The onboarding journey, and the access sheet, and nothing else: the
+         access step is the same markup whether it is step three of a first run
+         or a review opened later from the panel, so there is one implementation
+         of the permission rows rather than two that can drift.
+
+         Order matters. Scope comes before access because the gated folders that
+         matter are the ones inside the root the user picked — aimed at a project
+         directory there is nothing to ask for, and saying so is the point. -->
+    <div id="onboarding" hidden>
       <div class="sheet">
         <img src="reaper.svg" alt="" width="32" height="33" />
-        <h1>What should I look at?</h1>
-        <p>
-          cachereaper maps a folder and paints the caches and build artifacts it
-          can identify, so you can see what is big <em>and</em> safe to remove.
-        </p>
 
-        <div class="actions">
-          <button id="onboard-choose" class="primary">Choose a folder…</button>
-          <button id="onboard-home" class="ghost">Scan my home folder</button>
-        </div>
+        <section class="step" data-step="intro" hidden>
+          <h1>What is big, and what is safe</h1>
+          <p>
+            cachereaper maps a folder and paints the caches and build artifacts
+            it can identify, so you can see what is big <em>and</em> safe to
+            remove.
+          </p>
+          <ul class="tiers">
+            <li>
+              <i class="swatch low"></i><b>low</b>
+              <span>regenerates itself — package caches, DerivedData</span>
+            </li>
+            <li>
+              <i class="swatch medium"></i><b>medium</b>
+              <span>reinstallable — node_modules, virtualenvs</span>
+            </li>
+            <li>
+              <i class="swatch high"></i><b>high</b>
+              <span>review each — toolchains, simulator devices</span>
+            </li>
+            <li>
+              <i class="swatch none"></i><b>unclassified</b>
+              <span>no rule claims it, so it is never offered</span>
+            </li>
+          </ul>
+          <div class="actions">
+            <button class="primary" data-go="scope">Continue</button>
+          </div>
+        </section>
 
-        <p class="fineprint">
-          Scanning only reads. Nothing is deleted unless you select it and
-          confirm, and the folder you pick is the only place outside your home
-          directory cachereaper is allowed to touch this session.
-        </p>
+        <section class="step" data-step="scope" hidden>
+          <h1>What should I look at?</h1>
+          <p>Nothing is read until you name a folder.</p>
+          <div class="actions">
+            <button id="scope-home" class="primary">My home folder</button>
+            <button id="scope-choose" class="ghost">Choose a folder…</button>
+          </div>
+          <p class="fineprint">
+            Scanning only reads. Nothing is deleted unless you select it and
+            confirm, and the folder you pick is the only place outside your home
+            directory cachereaper is allowed to touch this session.
+          </p>
+        </section>
+
+        <section class="step" data-step="access" hidden>
+          <h1 id="access-title">Folders macOS asks about</h1>
+          <p id="access-lede"></p>
+          <ul id="gate-list" class="gates"></ul>
+          <div class="actions">
+            <button id="access-allow" class="primary" hidden>Allow all and scan</button>
+            <button id="access-done" class="ghost">Scan now</button>
+          </div>
+          <p class="fineprint" id="access-fineprint"></p>
+        </section>
+
         <p id="onboard-error" hidden></p>
+
+        <nav id="steps" aria-label="Progress" hidden>
+          <button id="step-back" class="ghost icon" aria-label="Go back">←</button>
+          <span class="dots" aria-hidden="true"></span>
+        </nav>
       </div>
+    </div>
+
+    <!-- Right-click on the map. A canvas has no per-block DOM to hang a menu
+         off, so this one is positioned by hand at the pointer. -->
+    <div id="context-menu" hidden>
+      <p class="path"></p>
+      <button data-action="reveal">Reveal in Finder</button>
     </div>
 
     <!-- Covers the map for the whole walk. The scan replaces the tree wholesale,
