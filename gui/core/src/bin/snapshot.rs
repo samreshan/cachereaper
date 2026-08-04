@@ -20,7 +20,15 @@ fn main() {
         .unwrap_or_else(cachereaper_core::guard::home);
     let out = args.next();
 
-    let tree = match scan_with_markers(&root, default_threads(), marker_vocabulary(), |_, _| {}) {
+    // Nothing extra to skip: a dev snapshot has no permission record to consult,
+    // and `scan_with_markers` refuses the dialog-raising locations on its own.
+    let tree = match scan_with_markers(
+        &root,
+        default_threads(),
+        marker_vocabulary(),
+        Vec::new(),
+        |_, _| {},
+    ) {
         Ok(t) => t,
         Err(err) => {
             eprintln!("scan failed: {err}");

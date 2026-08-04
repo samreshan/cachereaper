@@ -33,6 +33,9 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
-    "shortDescription": "Treemap disk visualiser that knows what is safe to delete"
+    "shortDescription": "Treemap disk visualiser that knows what is safe to delete",
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }

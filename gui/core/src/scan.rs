@@ -114,6 +114,10 @@ struct Shared {
     root_dev: u64,
     /// file names worth remembering, supplied by the rule table
     markers: std::collections::HashSet<String>,
+    /// Directories to record without opening. Reading one of these would raise a
+    /// macOS consent dialog on a worker thread, which is the one thing a scan
+    /// must never do — see `access::never_walk`.
+    skip: std::collections::HashSet<PathBuf>,
 }
 
 /// Bytes this entry actually occupies on disk.
@@ -144,16 +148,23 @@ pub fn scan(root: &Path, threads: usize) -> std::io::Result<Tree> {
 
 /// Scan while remembering which marker files (Cargo.toml, package.json, ...)
 /// each directory holds, so rule matching afterwards needs no second pass.
+///
+/// `skip` names directories to record but not open, on top of the ones
+/// `access::never_walk` refuses unconditionally. The caller passes the gated
+/// folders it does not hold a grant for, which is what makes "the scan never
+/// raises a dialog" true rather than hopeful: a folder the user has not allowed
+/// is never read, so there is nothing for macOS to ask about.
 pub fn scan_with_markers<F>(
     root: &Path,
     threads: usize,
     markers: std::collections::HashSet<String>,
+    skip: Vec<PathBuf>,
     progress: F,
 ) -> std::io::Result<Tree>
 where
     F: Fn(u64, u64) + Send + Sync,
 {
-    scan_inner(root, threads, markers, progress)
+    scan_inner(root, threads, markers, skip, progress)
 }
 
 /// `progress(files_seen, bytes_seen)` is called from worker threads; keep it cheap.
@@ -161,13 +172,14 @@ pub fn scan_with_progress<F>(root: &Path, threads: usize, progress: F) -> std::i
 where
     F: Fn(u64, u64) + Send + Sync,
 {
-    scan_inner(root, threads, Default::default(), progress)
+    scan_inner(root, threads, Default::default(), Vec::new(), progress)
 }
 
 fn scan_inner<F>(
     root: &Path,
     threads: usize,
     markers: std::collections::HashSet<String>,
+    skip: Vec<PathBuf>,
     progress: F,
 ) -> std::io::Result<Tree>
 where
@@ -201,6 +213,9 @@ where
         unreadable: AtomicU64::new(0),
         root_dev: root_md.dev(),
         markers,
+        // The unconditional refusals are the scanner's own business, so every
+        // caller gets them — the GUI, `snapshot`, and `bench` alike.
+        skip: crate::access::never_walk().into_iter().chain(skip).collect(),
     });
 
     let progress = Arc::new(progress);
@@ -264,7 +279,17 @@ fn worker<F: Fn(u64, u64)>(shared: &Shared, progress: &F) {
         let mut markers: Vec<String> = Vec::new();
         let mut unreadable = false;
 
-        match std::fs::read_dir(&path) {
+        // Decided before the read, not after: for a skipped directory the read
+        // itself is the harm, because it is what puts a consent dialog on
+        // screen. Refusing here lands it in the same branch as a directory the
+        // filesystem would not open, which is what it is from here on.
+        let opened = if shared.skip.contains(&path) {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        } else {
+            std::fs::read_dir(&path)
+        };
+
+        match opened {
             Err(_) => {
                 unreadable = true;
                 shared.unreadable.fetch_add(1, Ordering::Relaxed);
@@ -487,6 +512,33 @@ mod tests {
         if tree.stats.unreadable > 0 {
             assert!(tree.nodes.iter().any(|n| n.unreadable && n.name == "locked"));
         }
+    }
+
+    /// The load-bearing property of the skip set: a skipped directory is
+    /// recorded, counted as unreadable, and never opened — which on macOS is the
+    /// difference between a silent scan and a consent dialog raised from a
+    /// worker thread.
+    #[test]
+    fn skipped_directories_are_recorded_without_being_opened() {
+        let (_guard, root) = fixture();
+        let secret = root.join("secret");
+        fs::create_dir_all(secret.join("inside")).unwrap();
+        fs::write(secret.join("inside/blob.bin"), vec![0u8; 65536]).unwrap();
+
+        let tree = scan_with_markers(&root, 4, Default::default(), vec![secret.clone()], |_, _| {});
+        let tree = tree.unwrap();
+
+        let node = tree
+            .nodes
+            .iter()
+            .find(|n| n.name == "secret")
+            .expect("a skipped directory is still part of the tree");
+        assert!(node.unreadable, "a skipped directory must be marked unreadable");
+        assert!(
+            !tree.nodes.iter().any(|n| n.name == "inside"),
+            "the walk descended into a directory it was told not to open"
+        );
+        assert_eq!(node.total_size, 0, "nothing under a skipped directory is counted");
     }
 
     /// Minimal scoped temp directory so the crate keeps zero runtime dependencies.

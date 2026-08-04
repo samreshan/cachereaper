@@ -120,6 +120,13 @@ each. Aim it at a project directory and it asks for nothing at all. Answers live
 in `~/.cachereaper/config.json`, and a folder you allowed can be handed back from
 the same screen, which resets macOS to asking again.
 
+**The scan itself never raises a dialog.** A folder you have not allowed is not
+read, and the Photos library, Contacts, Calendars and Reminders are never read at
+all — each is its own consent prompt and no rule claims anything inside them.
+Because the app is signed ad-hoc rather than with a Developer ID, macOS ties
+those permissions to the exact build, so **upgrading resets them** and the first
+scan after an update asks once more.
+
 | | |
 | --- | --- |
 | **Scan folder…** | choose a different root and rescan |

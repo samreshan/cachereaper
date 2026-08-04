@@ -137,10 +137,20 @@ async fn scan_home(app: tauri::AppHandle, path: Option<String>) -> Result<ScanPa
     let root = path.map(PathBuf::from).unwrap_or_else(home);
     let handle = app.clone();
 
+    // A gate we do not hold a grant for is not read at all. Without this the walk
+    // reads it anyway, macOS raises its dialog on whichever worker got there
+    // first, and the access step the user just went through counted for nothing —
+    // including the case where they chose to scan without allowing it.
+    let skip: Vec<PathBuf> = access::gates()
+        .into_iter()
+        .filter(|gate| remembered(&app, &gate.id) != AccessState::Granted)
+        .map(|gate| gate.path)
+        .collect();
+
     // Throttle progress events: the walk visits ~150k directories and emitting
     // on each one would spend more time in IPC than in the filesystem.
     let last = std::sync::atomic::AtomicU64::new(0);
-    let tree = scan_with_markers(&root, default_threads(), marker_vocabulary(), move |files, bytes| {
+    let tree = scan_with_markers(&root, default_threads(), marker_vocabulary(), skip, move |files, bytes| {
         let bucket = files / 20_000;
         if bucket > last.swap(bucket, std::sync::atomic::Ordering::Relaxed) {
             let _ = handle.emit("scan-progress", Progress { files, bytes });
@@ -261,19 +271,19 @@ async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// The permission rows for a scope, asking macOS nothing the user has not
-/// already answered.
+/// The permission rows for a scope, without putting a dialog on screen.
 ///
-/// A gate we hold a record for is re-probed: that read is silent once it has
-/// been answered, and it catches a switch the user flipped in System Settings
-/// behind our back. A gate we have never asked about is reported `Unknown` and
-/// left untouched, because probing it is what raises the dialog.
+/// Only a gate we recorded as `Denied` is re-probed. That read cannot prompt —
+/// macOS refuses a denied folder outright and never asks twice — so it is free,
+/// and it is the one case worth checking, because it catches the user turning
+/// the folder back on in System Settings, which they have to do outside the app.
 ///
-/// Blocking pool rather than the event loop for the same reason as
-/// `request_access`: our record can be stale in the one direction that costs
-/// something — a gate reset outside the app is `Unknown` again, and the probe we
-/// thought was silent would raise a dialog and park the caller until it is
-/// answered.
+/// `Granted` is deliberately taken on trust rather than confirmed. TCC ties a
+/// grant to the code signature, and this app is signed ad-hoc, so a grant does
+/// not survive being rebuilt: probing to confirm one would raise the very dialog
+/// this command exists to avoid, at a moment nobody asked for it. If the record
+/// is wrong the scan finds out harmlessly — it skips anything not granted — and
+/// the switch is there to ask again.
 #[tauri::command]
 async fn access_status(app: tauri::AppHandle, root: Option<String>) -> Vec<GateStatus> {
     let root = root.map(PathBuf::from).unwrap_or_else(home);
@@ -289,10 +299,10 @@ async fn access_status(app: tauri::AppHandle, root: Option<String>) -> Vec<GateS
         gates
             .into_iter()
             .map(|(gate, was)| {
-                let now = if was == AccessState::Unknown {
-                    was
-                } else {
+                let now = if was == AccessState::Denied {
                     access::probe(&gate.path)
+                } else {
+                    was
                 };
                 (gate, was, now)
             })

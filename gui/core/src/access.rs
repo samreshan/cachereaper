@@ -100,6 +100,43 @@ pub fn gate(id: &str) -> Option<Gate> {
     gates().into_iter().find(|gate| gate.id == id)
 }
 
+/// Locations that raise a consent dialog of their own and can never hold a
+/// finding.
+///
+/// Desktop, Documents and Downloads are not the only gated things under `$HOME`.
+/// The Photos library, Contacts, Calendars and Reminders each sit behind their
+/// own TCC service, and a walk that reads them raises a separate dialog for each
+/// — from whichever worker thread arrived first, which is exactly the
+/// interruption this module exists to stop. No rule claims anything inside them,
+/// so reading them buys a prompt and nothing else. They are never walked.
+///
+/// The Photos library is named by whoever created it; the extension is the only
+/// fixed part, and `~/Pictures` itself is not gated, so listing it to find them
+/// is free.
+#[cfg(target_os = "macos")]
+pub fn never_walk() -> Vec<PathBuf> {
+    let home = home();
+    let mut out = vec![
+        home.join("Library/Application Support/AddressBook"),
+        home.join("Library/Calendars"),
+        home.join("Library/Reminders"),
+    ];
+    if let Ok(entries) = std::fs::read_dir(home.join("Pictures")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "photoslibrary") {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn never_walk() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// Find out where we stand with `path` — **by reading it**, which is the same
 /// thing as asking.
 ///
