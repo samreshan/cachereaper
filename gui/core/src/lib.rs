@@ -4,11 +4,15 @@
 //! plain `cargo test` / `cargo run --bin bench`, and so CI does not need the
 //! full desktop toolchain to check the parts that decide what gets deleted.
 
+pub mod access;
+pub mod config;
 pub mod guard;
 pub mod purge;
 pub mod rules;
 pub mod scan;
 
+pub use access::{AccessState, Gate, SettingsPane};
+pub use config::Config;
 pub use guard::{path_is_protected, validate_for_delete, Target};
 pub use purge::{allowed_roots, purge, PurgeResult};
 pub use rules::{all_findings, marker_vocabulary, Finding};
