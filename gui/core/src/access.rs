@@ -281,6 +281,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Unix only: mode bits are how the fixture makes a directory unreadable.
+    #[cfg(unix)]
     #[test]
     fn probing_an_unreadable_directory_reports_denied() {
         let dir = fixture();

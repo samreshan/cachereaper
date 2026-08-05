@@ -412,7 +412,14 @@ fn reveal(app: tauri::AppHandle, path: String) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     let status = std::process::Command::new("open").arg("-R").arg(&path).status();
-    #[cfg(not(target_os = "macos"))]
+    // Explorer takes the path glued to the switch — a separate argument selects
+    // nothing — and returns a non-zero exit code even when it worked, which is
+    // why only the spawn failure is reported.
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let status = std::process::Command::new("xdg-open").arg(&path).status();
 
     status.map(|_| ()).map_err(|e| e.to_string())

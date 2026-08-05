@@ -64,10 +64,30 @@ fn components(path: &Path) -> Vec<String> {
     out
 }
 
+#[cfg(not(windows))]
 pub fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+/// Windows has no `$HOME`. `USERPROFILE` is the equivalent, with the drive and
+/// path pair as the fallback for the shells that set those instead.
+#[cfg(windows)]
+pub fn home() -> PathBuf {
+    fn set(name: &str) -> Option<std::ffi::OsString> {
+        std::env::var_os(name).filter(|value| !value.is_empty())
+    }
+
+    if let Some(profile) = set("USERPROFILE") {
+        return PathBuf::from(profile);
+    }
+    if let (Some(drive), Some(path)) = (set("HOMEDRIVE"), set("HOMEPATH")) {
+        let mut joined = PathBuf::from(drive);
+        joined.push(PathBuf::from(path));
+        return joined;
+    }
+    PathBuf::from("C:\\")
 }
 
 /// Returns a reason string when the path must never be touched, `""` when allowed.
@@ -81,7 +101,14 @@ pub fn path_is_protected(path: &Path) -> String {
             return format!("cloud-sync folder: {part}");
         }
     }
-    if parts.len() < 3 {
+    // "at least two named components below the root". A Windows path carries a
+    // drive prefix on top of that root, so it spends one more part reaching the
+    // same depth — count it out, or `C:\Users` reads as deep enough to delete.
+    let floor = match path.components().next() {
+        Some(Component::Prefix(_)) => 4,
+        _ => 3,
+    };
+    if parts.len() < floor {
         return "path too shallow".to_string();
     }
     if path == home() || path == Path::new("/") {

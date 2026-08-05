@@ -1,0 +1,135 @@
+name: release
+
+# Builds the desktop app for both platforms and publishes them as one release.
+#
+# Windows cannot be cross-compiled from a Mac — the bundler needs a Windows
+# resource compiler and the NSIS/WiX toolchains — so the runner is the only place
+# both halves of a release can be produced from the same commit. `gui/release.sh`
+# remains the local path for a macOS-only build.
+#
+# `workflow_dispatch` builds and keeps the bundles as workflow artifacts without
+# publishing anything, so a change to the build can be proven before a tag exists
+# to attach it to. Pushing a `v*` tag is what creates the release.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (universal)
+            os: macos-latest
+            target: universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            bundles: app,dmg
+          - label: Windows (x64)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust-targets: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The npm package ships a prebuilt binary; `cargo install tauri-cli` builds
+      # it from source on every run, which costs more than the app does.
+      - name: Install the Tauri CLI
+        run: npm install -g @tauri-apps/cli@^2
+
+      # dev.sh writes a scan of whoever's home directory it ran against into the
+      # frontend directory, and the bundler embeds everything it finds there. It
+      # is gitignored, so a clean checkout has none — this is belt and braces
+      # against a future change that commits one.
+      - name: Drop any dev snapshot before it gets bundled
+        shell: bash
+        run: rm -f gui/dist/snapshot.json
+
+      # From `gui/`, not `gui/src-tauri/`: the CLI locates the project by looking
+      # for a `src-tauri` directory beneath the one it was run in.
+      - name: Build
+        working-directory: gui
+        run: tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+
+      # Stable, version-free names: the landing page links straight at
+      # `releases/latest/download/<name>`, which only resolves if the name does
+      # not change from one release to the next.
+      - name: Collect the bundles
+        shell: bash
+        run: |
+          mkdir -p release
+          out="gui/src-tauri/target/${{ matrix.target }}/release/bundle"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp "$(ls "$out"/dmg/*.dmg | head -1)" release/cachereaper-macos-universal.dmg
+          else
+            cp "$(ls "$out"/nsis/*-setup.exe | head -1)" release/cachereaper-windows-x64-setup.exe
+            cp "$(ls "$out"/msi/*.msi | head -1)" release/cachereaper-windows-x64.msi
+          fi
+          ls -l release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ runner.os }}
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cat > notes.md <<'NOTES'
+          ### Download
+
+          | | |
+          |---|---|
+          | **macOS** (Apple silicon + Intel) | `cachereaper-macos-universal.dmg` |
+          | **Windows 10/11** (x64) | `cachereaper-windows-x64-setup.exe` |
+
+          The `.msi` is the same Windows app for anyone deploying it centrally.
+
+          Neither build is signed by a paid certificate, so each operating system
+          says so once:
+
+          * **macOS** — after copying it to `/Applications`, clear the quarantine
+            flag: `xattr -dr com.apple.quarantine /Applications/cachereaper.app`.
+            `install.sh` in the repo does this for you.
+          * **Windows** — SmartScreen shows "Windows protected your PC". Choose
+            **More info → Run anyway**.
+
+          The Python CLI is unchanged and still a single file with no dependencies.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" \
+            --title "cachereaper $version" \
+            --notes-file notes.md \
+            bundles/*

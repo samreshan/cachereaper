@@ -10,8 +10,16 @@
 //!   * symlinks are never followed
 //!   * filesystem boundaries are never crossed
 //!   * sizes come from `st_blocks * 512` (APFS-accurate), falling back to length
+//!
+//! The three places those invariants touch the operating system directly — how
+//! many bytes an entry occupies, when it was last written, and which volume it
+//! lives on — are the only per-platform code here, gathered at the top of the
+//! file so the walk itself reads the same on either.
 
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -111,7 +119,7 @@ struct Shared {
     bytes: AtomicU64,
     dirs: AtomicU64,
     unreadable: AtomicU64,
-    root_dev: u64,
+    root_volume: VolumeId,
     /// file names worth remembering, supplied by the rule table
     markers: std::collections::HashSet<String>,
     /// Directories to record without opening. Reading one of these would raise a
@@ -128,8 +136,77 @@ struct Shared {
 /// legitimately occupy no local blocks while reporting a large `len()`. Counting
 /// that length invents reclaimable space that deleting cannot recover — on this
 /// machine it inflated `~/Library` from 29.9G to 704G.
+#[cfg(unix)]
 fn entry_size(md: &std::fs::Metadata) -> u64 {
     md.blocks() * 512
+}
+
+/// The same rule where there is no `st_blocks` to ask.
+///
+/// Windows reports only the logical length, so the placeholders have to be
+/// recognised rather than measured: OneDrive's files-on-demand carry `OFFLINE`
+/// or one of the `RECALL_ON_*` attributes, and a sparse file says so outright.
+/// Each of those occupies nothing locally while reporting its full size, which
+/// is the same lie `st_blocks` protects against everywhere else — so they count
+/// as zero, and everything else counts as its length.
+#[cfg(windows)]
+fn entry_size(md: &std::fs::Metadata) -> u64 {
+    const SPARSE_FILE: u32 = 0x0000_0200;
+    const OFFLINE: u32 = 0x0000_1000;
+    const RECALL_ON_OPEN: u32 = 0x0004_0000;
+    const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+    const DATALESS: u32 = SPARSE_FILE | OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS;
+
+    if md.file_attributes() & DATALESS != 0 {
+        return 0;
+    }
+    md.file_size()
+}
+
+/// Last write time as unix seconds.
+#[cfg(unix)]
+fn entry_mtime(md: &std::fs::Metadata) -> i64 {
+    md.mtime()
+}
+
+/// Windows counts 100-nanosecond ticks from 1601 instead, so the value has to be
+/// rebased before the frontend — which only ever speaks unix seconds — sees it.
+#[cfg(windows)]
+fn entry_mtime(md: &std::fs::Metadata) -> i64 {
+    const TICKS_PER_SECOND: u64 = 10_000_000;
+    const SECONDS_1601_TO_1970: u64 = 11_644_473_600;
+    (md.last_write_time() / TICKS_PER_SECOND).saturating_sub(SECONDS_1601_TO_1970) as i64
+}
+
+/// How a volume is identified, which is only possible on one of the two.
+#[cfg(unix)]
+type VolumeId = u64;
+#[cfg(windows)]
+type VolumeId = ();
+
+#[cfg(unix)]
+fn volume_of(md: &std::fs::Metadata) -> VolumeId {
+    md.dev()
+}
+
+#[cfg(windows)]
+fn volume_of(_md: &std::fs::Metadata) -> VolumeId {}
+
+/// Whether descending into this directory would leave the volume we started on.
+#[cfg(unix)]
+fn leaves_volume(md: &std::fs::Metadata, root: VolumeId) -> bool {
+    md.dev() != root
+}
+
+/// Windows exposes no device id through `std`, but it does not need one: another
+/// volume is grafted into a directory tree through a reparse point — a junction
+/// or a mount point — which is the same thing the symlink rule already refuses to
+/// follow. Testing the reparse bit therefore covers both, and covers it for
+/// junctions, which `is_symlink` does not report.
+#[cfg(windows)]
+fn leaves_volume(md: &std::fs::Metadata, _root: VolumeId) -> bool {
+    const REPARSE_POINT: u32 = 0x0000_0400;
+    md.file_attributes() & REPARSE_POINT != 0
 }
 
 /// Worker count that measured fastest on an APFS SSD: the walk is syscall-bound,
@@ -211,7 +288,7 @@ where
         bytes: AtomicU64::new(0),
         dirs: AtomicU64::new(1),
         unreadable: AtomicU64::new(0),
-        root_dev: root_md.dev(),
+        root_volume: volume_of(&root_md),
         markers,
         // The unconditional refusals are the scanner's own business, so every
         // caller gets them — the GUI, `snapshot`, and `bench` alike.
@@ -297,12 +374,13 @@ fn worker<F: Fn(u64, u64)>(shared: &Shared, progress: &F) {
             Ok(entries) => {
                 for entry in entries.flatten() {
                     let Ok(md) = entry.metadata() else { continue };
-                    if md.mtime() > newest {
-                        newest = md.mtime();
+                    let mtime = entry_mtime(&md);
+                    if mtime > newest {
+                        newest = mtime;
                     }
                     // never follow symlinks: count the link itself, do not descend
                     if md.is_dir() && !md.file_type().is_symlink() {
-                        if md.dev() != shared.root_dev {
+                        if leaves_volume(&md, shared.root_volume) {
                             continue; // never cross a filesystem boundary
                         }
                         subdirs.push((
@@ -423,6 +501,10 @@ mod tests {
     /// Regression: a sparse file reports a huge `len()` but occupies no blocks,
     /// exactly like an iCloud/Drive dataless placeholder. Counting its logical
     /// length inflated a real ~/Library scan from 29.9G to 704G.
+    ///
+    /// Unix only because `set_len` is what makes a file sparse here; on NTFS it
+    /// allocates the blocks, so the fixture would not be the thing under test.
+    #[cfg(unix)]
     #[test]
     fn sparse_and_dataless_files_count_as_the_space_they_occupy() {
         let dir = tempdir::TempDir::new();
@@ -466,6 +548,9 @@ mod tests {
         assert_eq!(one.nodes.len(), many.nodes.len());
     }
 
+    /// Unix only: creating a symlink on Windows needs Developer Mode or an
+    /// elevated process, so the fixture cannot be built unconditionally.
+    #[cfg(unix)]
     #[test]
     fn symlinks_are_not_followed() {
         let (_guard, root) = fixture();
@@ -491,6 +576,8 @@ mod tests {
         assert_eq!(tree.path_of(0), root);
     }
 
+    /// Unix only: mode bits are how the fixture makes a directory unreadable.
+    #[cfg(unix)]
     #[test]
     fn unreadable_directories_are_recorded_not_swallowed() {
         let (_guard, root) = fixture();

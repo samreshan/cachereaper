@@ -274,7 +274,7 @@ pub fn filter_gitignored(paths: Vec<(u32, PathBuf, ArtifactRule)>) -> Vec<(u32, 
     for (repo, items) in by_repo {
         let payload: String = items
             .iter()
-            .map(|(_, p, _)| p.to_string_lossy().into_owned())
+            .map(|(_, p, _)| git_path(p))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -300,12 +300,27 @@ pub fn filter_gitignored(paths: Vec<(u32, PathBuf, ArtifactRule)>) -> Vec<(u32, 
             .collect();
 
         for (node, path, rule) in items {
-            if ignored.contains(&path.to_string_lossy().into_owned()) {
+            if ignored.contains(&git_path(&path)) {
                 kept.push((node, path, rule));
             }
         }
     }
     kept
+}
+
+/// A path in the spelling git uses.
+///
+/// `check-ignore --stdin` echoes back the paths it was handed, and git speaks
+/// forward slashes on every platform. Sending a Windows path verbatim gets
+/// either nothing back or something that no longer matches the key we look it up
+/// by — and a miss here silently drops a finding, so both ends go through this.
+fn git_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
 }
 
 fn git_repo_root(start: &Path) -> Option<PathBuf> {
