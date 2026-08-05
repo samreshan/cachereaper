@@ -7,13 +7,14 @@
 
 <p align="center">
   <a href="https://github.com/samreshan/cachereaper/releases/latest">
-    <img src="assets/download.png" alt="Download cachereaper for macOS" width="230" />
+    <img src="assets/download.png" alt="Download cachereaper" width="230" />
   </a>
 </p>
 
 <p align="center">
   <a href="https://github.com/samreshan/cachereaper/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/samreshan/cachereaper?style=flat-square&color=ea1d1f&label=latest" /></a>
   <img alt="macOS universal" src="https://img.shields.io/badge/macOS-universal-5a5a5a?style=flat-square" />
+  <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-5a5a5a?style=flat-square" />
   <img alt="Python 3.9+" src="https://img.shields.io/badge/CLI-Python%203.9%2B-5a5a5a?style=flat-square" />
   <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-5a5a5a?style=flat-square" /></a>
 </p>
@@ -48,7 +49,7 @@ HIGH RISK     stateful or expensive - review each one   [1.8G]
 
 ## Install
 
-**Desktop app** — downloads the [latest release](https://github.com/samreshan/cachereaper/releases/latest)
+**Desktop app, macOS** — downloads the [latest release](https://github.com/samreshan/cachereaper/releases/latest)
 into `/Applications`, ready to open:
 
 ```bash
@@ -56,7 +57,12 @@ curl -fsSL https://raw.githubusercontent.com/samreshan/cachereaper/main/install.
 bash install.sh
 ```
 
-**CLI** — one file, no dependencies, Python 3.9+, macOS and Linux:
+**Desktop app, Windows 10/11** — run
+[`cachereaper-windows-x64-setup.exe`](https://github.com/samreshan/cachereaper/releases/latest/download/cachereaper-windows-x64-setup.exe).
+There is an [`.msi`](https://github.com/samreshan/cachereaper/releases/latest/download/cachereaper-windows-x64.msi)
+for deploying it centrally.
+
+**CLI** — one file, no dependencies, Python 3.9+, macOS, Linux and Windows:
 
 ```bash
 git clone https://github.com/samreshan/cachereaper
@@ -78,6 +84,15 @@ xattr -dr com.apple.quarantine /Applications/cachereaper.app
 That clears the flag macOS puts on browser downloads — the same decision the
 Privacy & Security pane asks for, made up front. `install.sh` does it for you.
 Building from source with `./gui/release.sh` avoids the question entirely.
+</details>
+
+<details>
+<summary>Windows says "Windows protected your PC"?</summary>
+
+Same cause, different wording. The installer is not signed with a paid code
+signing certificate, so SmartScreen has no publisher to name and warns about
+what it cannot identify rather than what it found. Choose **More info → Run
+anyway**.
 </details>
 
 ## Use it

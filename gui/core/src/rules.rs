@@ -28,7 +28,21 @@ pub const SKIP_TOP_LEVEL: &[&str] = &[
     "Public",
     ".Trash",
     "Virtual Machines.localized",
+    "AppData",
 ];
+
+/// Which rule table this build belongs to, matching `PLATFORM` in cachereaper.py.
+///
+/// A rule says which operating system its path is true on, and the ones that
+/// cannot apply here are never resolved — `Library/Application Support/*/Cache`
+/// is four wasted directory reads on Windows and nothing else.
+pub const PLATFORM: &str = if cfg!(target_os = "macos") {
+    "macos"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else {
+    "linux"
+};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct StaticRule {
@@ -40,6 +54,14 @@ pub struct StaticRule {
     pub children: bool,
     pub warn: String,
     pub system: bool,
+    /// `any`, or the one operating system this path exists on.
+    pub os: String,
+}
+
+impl StaticRule {
+    pub fn applies_here(&self) -> bool {
+        self.os == "any" || self.os == PLATFORM
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -210,6 +232,9 @@ pub fn static_findings(tree: &Tree, include_system: bool) -> Vec<Finding> {
     let mut out = Vec::new();
 
     for rule in &rules().statics {
+        if !rule.applies_here() {
+            continue;
+        }
         if rule.system && !include_system {
             continue;
         }
@@ -449,13 +474,34 @@ mod tests {
     #[test]
     fn embedded_rules_parse_and_look_sane() {
         let r = rules();
-        assert_eq!(r.schema, 1);
+        assert_eq!(r.schema, 2);
         assert!(r.statics.len() >= 50, "got {}", r.statics.len());
         assert!(r.artifacts.len() >= 30, "got {}", r.artifacts.len());
         for rule in &r.statics {
             assert!(["low", "medium", "high"].contains(&rule.tier.as_str()));
             assert!(!rule.label.is_empty());
             assert!(!rule.regen.is_empty());
+            assert!(
+                ["any", "macos", "windows", "linux"].contains(&rule.os.as_str()),
+                "{} claims os {:?}",
+                rule.id,
+                rule.os
+            );
+        }
+    }
+
+    /// Every platform must have rules of its own to run. A table that filtered
+    /// down to nothing on Windows would still parse, still pass every other
+    /// check here, and find nothing at all on the machine it shipped to.
+    #[test]
+    fn each_platform_keeps_a_table_worth_running() {
+        for platform in ["macos", "windows", "linux"] {
+            let live = rules()
+                .statics
+                .iter()
+                .filter(|rule| rule.os == "any" || rule.os == platform)
+                .count();
+            assert!(live >= 25, "{platform} is down to {live} static rules");
         }
     }
 

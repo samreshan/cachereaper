@@ -1,6 +1,6 @@
 {
-  "schema": 1,
-  "version": "1.3.0",
+  "schema": 2,
+  "version": "1.4.0",
   "tiers": [
     "low",
     "medium",
@@ -32,6 +32,7 @@
   ],
   "skip_top_level": [
     ".Trash",
+    "AppData",
     "Applications",
     "Library",
     "Movies",
@@ -49,7 +50,8 @@
       "regen": "re-downloaded on next npx",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "npm-cache",
@@ -59,7 +61,8 @@
       "regen": "npm cache clean --force",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "npm-logs",
@@ -69,7 +72,8 @@
       "regen": "n/a",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "yarn-cache",
@@ -79,7 +83,8 @@
       "regen": "yarn install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "yarn-cache2",
@@ -89,7 +94,8 @@
       "regen": "yarn install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "pnpm-store",
@@ -99,7 +105,8 @@
       "regen": "pnpm install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "bun-cache",
@@ -109,7 +116,8 @@
       "regen": "bun install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "pip-cache",
@@ -119,7 +127,8 @@
       "regen": "pip cache purge",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "pip-cache2",
@@ -129,7 +138,8 @@
       "regen": "pip cache purge",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "uv-cache",
@@ -139,7 +149,8 @@
       "regen": "uv cache clean",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "poetry-cache",
@@ -149,7 +160,8 @@
       "regen": "poetry cache clear --all .",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "cargo-registry",
@@ -159,7 +171,8 @@
       "regen": "cargo build re-downloads",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "cargo-git",
@@ -169,7 +182,8 @@
       "regen": "cargo build re-downloads",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "go-build",
@@ -179,7 +193,8 @@
       "regen": "go build",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "gradle-cache",
@@ -189,7 +204,8 @@
       "regen": "gradle build",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "gradle-daemon",
@@ -199,7 +215,8 @@
       "regen": "n/a",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "composer-cache",
@@ -209,7 +226,8 @@
       "regen": "composer install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "composer-cache2",
@@ -219,7 +237,8 @@
       "regen": "composer install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "cocoapods-cache",
@@ -229,7 +248,8 @@
       "regen": "pod install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "node-gyp",
@@ -239,7 +259,8 @@
       "regen": "re-downloaded on build",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "puppeteer",
@@ -249,7 +270,8 @@
       "regen": "re-downloaded on use",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "playwright",
@@ -259,7 +281,8 @@
       "regen": "npx playwright install",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "playwright-go",
@@ -269,7 +292,8 @@
       "regen": "re-downloaded on use",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "prisma",
@@ -279,7 +303,8 @@
       "regen": "re-downloaded on generate",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "hardhat",
@@ -289,7 +314,8 @@
       "regen": "re-downloaded on compile",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "homebrew-cache",
@@ -299,7 +325,8 @@
       "regen": "brew cleanup -s --prune=all",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "swiftpm-cache",
@@ -309,7 +336,8 @@
       "regen": "swift build",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "deno-cache",
@@ -319,7 +347,8 @@
       "regen": "deno cache",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "flutter-tool",
@@ -329,7 +358,8 @@
       "regen": "flutter pub get",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "codex-runtimes",
@@ -339,7 +369,8 @@
       "regen": "re-downloaded by codex",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "codex-packages",
@@ -349,7 +380,8 @@
       "regen": "re-downloaded by codex",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "claude-vm-bundles",
@@ -359,7 +391,8 @@
       "regen": "re-downloaded on demand (large)",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "antigravity-backup",
@@ -369,7 +402,8 @@
       "regen": "n/a",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "vscode-vsix",
@@ -379,7 +413,8 @@
       "regen": "n/a",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "vscode-cacheddata",
@@ -389,7 +424,8 @@
       "regen": "rebuilt on launch",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "xcode-deriveddata",
@@ -399,7 +435,8 @@
       "regen": "rebuilt on next build",
       "children": true,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "xcode-logs",
@@ -409,7 +446,8 @@
       "regen": "n/a",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "simulator-caches",
@@ -419,7 +457,8 @@
       "regen": "rebuilt on launch",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "simulator-devices",
@@ -429,7 +468,8 @@
       "regen": "xcrun simctl delete unavailable (safer)",
       "children": false,
       "warn": "wipes simulator state; prefer `xcrun simctl delete unavailable`",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "xcode-archives",
@@ -439,7 +479,8 @@
       "regen": "cannot be regenerated",
       "children": false,
       "warn": "contains dSYMs needed to symbolicate released builds",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "app-cache",
@@ -449,7 +490,8 @@
       "regen": "rebuilt on launch",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "app-code-cache",
@@ -459,7 +501,8 @@
       "regen": "rebuilt on launch",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "app-gpu-cache",
@@ -469,7 +512,8 @@
       "regen": "rebuilt on launch",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "app-cachestorage",
@@ -479,7 +523,8 @@
       "regen": "rebuilt on launch",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "container-cache",
@@ -489,7 +534,393 @@
       "regen": "rebuilt on launch",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
+    },
+    {
+      "id": "npm-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/npm-cache",
+      "label": "npm content cache",
+      "regen": "npm cache clean --force",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "yarn-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/Yarn/Cache",
+      "label": "yarn cache",
+      "regen": "yarn install",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "yarn-berry-win",
+      "tier": "low",
+      "glob": "AppData/Local/Yarn/Berry/cache",
+      "label": "yarn berry global cache",
+      "regen": "yarn install",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "pnpm-store-win",
+      "tier": "low",
+      "glob": "AppData/Local/pnpm/store",
+      "label": "pnpm content store",
+      "regen": "pnpm install",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "pip-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/pip/Cache",
+      "label": "pip wheel cache",
+      "regen": "pip cache purge",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "uv-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/uv/cache",
+      "label": "uv package cache",
+      "regen": "uv cache clean",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "poetry-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/pypoetry/Cache",
+      "label": "poetry cache",
+      "regen": "poetry cache clear --all .",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "virtualenv-win",
+      "tier": "low",
+      "glob": "AppData/Local/pypa/virtualenv",
+      "label": "virtualenv seed wheels",
+      "regen": "re-downloaded on next venv",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "go-build-win",
+      "tier": "low",
+      "glob": "AppData/Local/go-build",
+      "label": "go build cache",
+      "regen": "go build",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "composer-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/Composer",
+      "label": "composer cache",
+      "regen": "composer install",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "nuget-http-win",
+      "tier": "low",
+      "glob": "AppData/Local/NuGet/v3-cache",
+      "label": "NuGet HTTP cache",
+      "regen": "dotnet restore",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "nuget-plugins-win",
+      "tier": "low",
+      "glob": "AppData/Local/NuGet/plugins-cache",
+      "label": "NuGet plugin cache",
+      "regen": "dotnet restore",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "node-gyp-win",
+      "tier": "low",
+      "glob": "AppData/Local/node-gyp/Cache",
+      "label": "node-gyp headers",
+      "regen": "re-downloaded on build",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "playwright-win",
+      "tier": "low",
+      "glob": "AppData/Local/ms-playwright",
+      "label": "playwright browsers",
+      "regen": "npx playwright install",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "deno-win",
+      "tier": "low",
+      "glob": "AppData/Local/deno",
+      "label": "deno module cache",
+      "regen": "deno cache",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "electron-win",
+      "tier": "low",
+      "glob": "AppData/Local/electron/Cache",
+      "label": "Electron binary downloads",
+      "regen": "re-downloaded on build",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "electron-builder-win",
+      "tier": "low",
+      "glob": "AppData/Local/electron-builder/Cache",
+      "label": "electron-builder downloads",
+      "regen": "re-downloaded on build",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "pub-cache-win",
+      "tier": "medium",
+      "glob": "AppData/Local/Pub/Cache",
+      "label": "Dart/Flutter package cache",
+      "regen": "flutter pub get",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "vscode-vsix-win",
+      "tier": "low",
+      "glob": "AppData/Roaming/Code/CachedExtensionVSIXs",
+      "label": "VS Code extension installers (already installed)",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "vscode-cacheddata-win",
+      "tier": "low",
+      "glob": "AppData/Roaming/Code/CachedData",
+      "label": "VS Code compiled JS cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "vs-packages-win",
+      "tier": "medium",
+      "glob": "AppData/Local/Microsoft/VisualStudio/Packages",
+      "label": "Visual Studio installer package cache",
+      "regen": "re-downloaded if VS is repaired",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "jetbrains-caches-win",
+      "tier": "low",
+      "glob": "AppData/Local/JetBrains/*/caches",
+      "label": "JetBrains IDE index caches",
+      "regen": "rebuilt on next index",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "unity-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/Unity/cache",
+      "label": "Unity asset + package cache",
+      "regen": "re-downloaded by Unity",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "crash-dumps-win",
+      "tier": "low",
+      "glob": "AppData/Local/CrashDumps",
+      "label": "application crash dumps",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "wer-archive-win",
+      "tier": "low",
+      "glob": "AppData/Local/Microsoft/Windows/WER/ReportArchive",
+      "label": "Windows error reports (archived)",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "wer-queue-win",
+      "tier": "low",
+      "glob": "AppData/Local/Microsoft/Windows/WER/ReportQueue",
+      "label": "Windows error reports (queued)",
+      "regen": "n/a",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "inetcache-win",
+      "tier": "low",
+      "glob": "AppData/Local/Microsoft/Windows/INetCache",
+      "label": "WinINet download cache",
+      "regen": "rebuilt on use",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "explorer-thumbs-win",
+      "tier": "low",
+      "glob": "AppData/Local/Microsoft/Windows/Explorer",
+      "label": "Explorer thumbnail + icon caches",
+      "regen": "rebuilt by Explorer",
+      "children": false,
+      "warn": "the .db files are locked while Explorer is running",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "app-cache-win",
+      "tier": "low",
+      "glob": "AppData/Roaming/*/Cache",
+      "label": "app HTTP cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "app-code-cache-win",
+      "tier": "low",
+      "glob": "AppData/Roaming/*/Code Cache",
+      "label": "app code cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "app-gpu-cache-win",
+      "tier": "low",
+      "glob": "AppData/Roaming/*/GPUCache",
+      "label": "app GPU shader cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "app-cachestorage-win",
+      "tier": "low",
+      "glob": "AppData/Roaming/*/Service Worker/CacheStorage",
+      "label": "service worker cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "local-app-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/*/Cache",
+      "label": "app cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "local-app-code-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/*/Code Cache",
+      "label": "app code cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
+    },
+    {
+      "id": "local-app-gpu-cache-win",
+      "tier": "low",
+      "glob": "AppData/Local/*/GPUCache",
+      "label": "app GPU shader cache",
+      "regen": "rebuilt on launch",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "windows"
     },
     {
       "id": "go-modcache",
@@ -499,7 +930,8 @@
       "regen": "go mod download",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "maven-repo",
@@ -509,7 +941,8 @@
       "regen": "mvn re-downloads",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "nuget-packages",
@@ -519,7 +952,8 @@
       "regen": "dotnet restore",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "pub-cache",
@@ -529,7 +963,8 @@
       "regen": "flutter pub get",
       "children": false,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "rustup-toolchains",
@@ -539,7 +974,8 @@
       "regen": "rustup toolchain install <ver>",
       "children": false,
       "warn": "prefer `rustup toolchain uninstall <old>` to keep the active one",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "docker-modules",
@@ -549,7 +985,8 @@
       "regen": "reinstalled by Docker Desktop",
       "children": false,
       "warn": "only when Docker is not running",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "xdg-cache",
@@ -559,7 +996,8 @@
       "regen": "app-specific",
       "children": true,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "any"
     },
     {
       "id": "macos-user-cache",
@@ -569,7 +1007,19 @@
       "regen": "rebuilt on launch",
       "children": true,
       "warn": "",
-      "system": false
+      "system": false,
+      "os": "macos"
+    },
+    {
+      "id": "windows-temp",
+      "tier": "medium",
+      "glob": "AppData/Local/Temp",
+      "label": "per-user temp files",
+      "regen": "rebuilt as needed",
+      "children": true,
+      "warn": "an entry can belong to a running installer or app",
+      "system": false,
+      "os": "windows"
     },
     {
       "id": "trash",
@@ -579,7 +1029,8 @@
       "regen": "cannot be undone",
       "children": true,
       "warn": "this is your Trash - check it before emptying",
-      "system": false
+      "system": false,
+      "os": "macos"
     },
     {
       "id": "system-cache",
@@ -589,7 +1040,8 @@
       "regen": "rebuilt by macOS",
       "children": true,
       "warn": "requires sudo; some entries are in use",
-      "system": true
+      "system": true,
+      "os": "macos"
     },
     {
       "id": "tmp-folders",
@@ -599,7 +1051,8 @@
       "regen": "rebuilt by macOS",
       "children": false,
       "warn": "requires sudo; may be in active use",
-      "system": true
+      "system": true,
+      "os": "macos"
     }
   ],
   "artifacts": [

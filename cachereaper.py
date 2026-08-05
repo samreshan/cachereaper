@@ -28,9 +28,15 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 HOME = Path.home()
 LOG_DIR = HOME / ".cachereaper"
+
+# Which set of rules applies here. A cache lives somewhere different on each
+# operating system — ~/Library/Caches/pip, ~/.cache/pip and
+# %LOCALAPPDATA%\pip\Cache are the same cache — so a rule says where it is true
+# and the ones that cannot apply are never probed.
+PLATFORM = "macos" if sys.platform == "darwin" else "windows" if os.name == "nt" else "linux"
 
 TIER_RANK = {"low": 0, "medium": 1, "high": 2}
 TIER_ORDER = ("low", "medium", "high")
@@ -61,16 +67,26 @@ def _looks_like_cloud_dir(name: str) -> bool:
                for hint in CLOUD_DIR_HINTS)
 
 # Never descend into these during the project walk (top-level of a root).
+#
+# AppData earns its place the same way Library does, and more urgently: a
+# Windows app installed under AppData\Local\Programs ships its own node_modules,
+# which the artifact rules would otherwise claim as "installed npm packages" and
+# offer to delete out from under a working program.
 SKIP_TOP_LEVEL = {
     "Library", "Applications", "Movies", "Music", "Pictures", "Public",
-    ".Trash", "Virtual Machines.localized",
+    ".Trash", "Virtual Machines.localized", "AppData",
 }
 
 # ---------------------------------------------------------------------------
 # static cache locations
 # fields: id, tier, glob (relative to HOME unless absolute), children?, label,
-#         regen, warn
+#         regen, warn, os
 # ordered specific -> generic; first rule to claim a path wins
+#
+# `os` is "any" when the path is the same everywhere, which is most of the
+# HOME-relative dotfile caches — ~/.cargo/registry and ~/.m2/repository are
+# spelled identically on all three. Anything under Library/ or AppData/ is
+# named for the one it belongs to.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -83,6 +99,10 @@ class StaticRule:
     children: bool = False
     warn: str = ""
     system: bool = False
+    os: str = "any"          # any | macos | windows | linux
+
+    def applies_here(self) -> bool:
+        return self.os in ("any", PLATFORM)
 
 
 S = StaticRule
@@ -92,64 +112,136 @@ STATIC_RULES = [
     S("npm-cache", "low", ".npm/_cacache", "npm content cache", "npm cache clean --force"),
     S("npm-logs", "low", ".npm/_logs", "npm debug logs", "n/a"),
     S("yarn-cache", "low", ".yarn/cache", "yarn cache", "yarn install"),
-    S("yarn-cache2", "low", "Library/Caches/Yarn", "yarn global cache", "yarn install"),
-    S("pnpm-store", "low", "Library/pnpm/store", "pnpm content store", "pnpm install"),
+    S("yarn-cache2", "low", "Library/Caches/Yarn", "yarn global cache", "yarn install", os="macos"),
+    S("pnpm-store", "low", "Library/pnpm/store", "pnpm content store", "pnpm install", os="macos"),
     S("bun-cache", "low", ".bun/install/cache", "bun install cache", "bun install"),
-    S("pip-cache", "low", "Library/Caches/pip", "pip wheel cache", "pip cache purge"),
+    S("pip-cache", "low", "Library/Caches/pip", "pip wheel cache", "pip cache purge", os="macos"),
     S("pip-cache2", "low", ".cache/pip", "pip wheel cache", "pip cache purge"),
     S("uv-cache", "low", ".cache/uv", "uv package cache", "uv cache clean"),
-    S("poetry-cache", "low", "Library/Caches/pypoetry", "poetry cache", "poetry cache clear --all ."),
+    S("poetry-cache", "low", "Library/Caches/pypoetry", "poetry cache", "poetry cache clear --all .", os="macos"),
     S("cargo-registry", "low", ".cargo/registry", "cargo crate sources + archives", "cargo build re-downloads"),
     S("cargo-git", "low", ".cargo/git", "cargo git checkouts", "cargo build re-downloads"),
-    S("go-build", "low", "Library/Caches/go-build", "go build cache", "go build"),
+    S("go-build", "low", "Library/Caches/go-build", "go build cache", "go build", os="macos"),
     S("gradle-cache", "low", ".gradle/caches", "gradle dependency cache", "gradle build"),
     S("gradle-daemon", "low", ".gradle/daemon", "gradle daemon logs", "n/a"),
-    S("composer-cache", "low", "Library/Caches/composer", "composer cache", "composer install"),
+    S("composer-cache", "low", "Library/Caches/composer", "composer cache", "composer install", os="macos"),
     S("composer-cache2", "low", ".composer/cache", "composer cache", "composer install"),
-    S("cocoapods-cache", "low", "Library/Caches/CocoaPods", "cocoapods spec cache", "pod install"),
-    S("node-gyp", "low", "Library/Caches/node-gyp", "node-gyp headers", "re-downloaded on build"),
+    S("cocoapods-cache", "low", "Library/Caches/CocoaPods", "cocoapods spec cache", "pod install", os="macos"),
+    S("node-gyp", "low", "Library/Caches/node-gyp", "node-gyp headers", "re-downloaded on build", os="macos"),
     S("puppeteer", "low", ".cache/puppeteer", "puppeteer chromium builds", "re-downloaded on use"),
-    S("playwright", "low", "Library/Caches/ms-playwright", "playwright browsers", "npx playwright install"),
-    S("playwright-go", "low", "Library/Caches/ms-playwright-go", "playwright-go browsers", "re-downloaded on use"),
+    S("playwright", "low", "Library/Caches/ms-playwright", "playwright browsers", "npx playwright install", os="macos"),
+    S("playwright-go", "low", "Library/Caches/ms-playwright-go", "playwright-go browsers", "re-downloaded on use", os="macos"),
     S("prisma", "low", ".cache/prisma", "prisma engines", "re-downloaded on generate"),
-    S("hardhat", "low", "Library/Caches/hardhat-nodejs", "hardhat compiler cache", "re-downloaded on compile"),
-    S("homebrew-cache", "low", "Library/Caches/Homebrew", "homebrew downloads", "brew cleanup -s --prune=all"),
-    S("swiftpm-cache", "low", "Library/Caches/org.swift.swiftpm", "SwiftPM dependency cache", "swift build"),
-    S("deno-cache", "low", "Library/Caches/deno", "deno module cache", "deno cache"),
+    S("hardhat", "low", "Library/Caches/hardhat-nodejs", "hardhat compiler cache", "re-downloaded on compile", os="macos"),
+    S("homebrew-cache", "low", "Library/Caches/Homebrew", "homebrew downloads", "brew cleanup -s --prune=all", os="macos"),
+    S("swiftpm-cache", "low", "Library/Caches/org.swift.swiftpm", "SwiftPM dependency cache", "swift build", os="macos"),
+    S("deno-cache", "low", "Library/Caches/deno", "deno module cache", "deno cache", os="macos"),
     S("flutter-tool", "low", ".dart-tool", "dart tool state", "flutter pub get"),
 
     # --- AI / editor tool runtimes (re-downloaded on next launch) ----------
     S("codex-runtimes", "low", ".cache/codex-runtimes", "codex runtime installs", "re-downloaded by codex"),
     S("codex-packages", "medium", ".codex/packages", "codex packages", "re-downloaded by codex"),
     S("claude-vm-bundles", "medium", "Library/Application Support/Claude/vm_bundles",
-      "Claude Desktop VM images", "re-downloaded on demand (large)"),
+      "Claude Desktop VM images", "re-downloaded on demand (large)", os="macos"),
     S("antigravity-backup", "medium", ".gemini/antigravity-backup", "stale Antigravity IDE backup", "n/a"),
     S("vscode-vsix", "low", "Library/Application Support/Code/CachedExtensionVSIXs",
-      "VS Code extension installers (already installed)", "n/a"),
+      "VS Code extension installers (already installed)", "n/a", os="macos"),
     S("vscode-cacheddata", "low", "Library/Application Support/Code/CachedData",
-      "VS Code compiled JS cache", "rebuilt on launch"),
+      "VS Code compiled JS cache", "rebuilt on launch", os="macos"),
 
     # --- Xcode / iOS -------------------------------------------------------
     S("xcode-deriveddata", "low", "Library/Developer/Xcode/DerivedData",
-      "Xcode DerivedData", "rebuilt on next build", children=True),
-    S("xcode-logs", "low", "Library/Developer/Xcode/iOS Device Logs", "device logs", "n/a"),
+      "Xcode DerivedData", "rebuilt on next build", children=True, os="macos"),
+    S("xcode-logs", "low", "Library/Developer/Xcode/iOS Device Logs", "device logs", "n/a", os="macos"),
     S("simulator-caches", "low", "Library/Developer/CoreSimulator/Caches",
-      "simulator caches", "rebuilt on launch"),
+      "simulator caches", "rebuilt on launch", os="macos"),
     S("simulator-devices", "high", "Library/Developer/CoreSimulator/Devices",
       "simulator devices + their data", "xcrun simctl delete unavailable (safer)",
-      warn="wipes simulator state; prefer `xcrun simctl delete unavailable`"),
+      warn="wipes simulator state; prefer `xcrun simctl delete unavailable`", os="macos"),
     S("xcode-archives", "high", "Library/Developer/Xcode/Archives",
       "Xcode archives (shipped builds, dSYMs)", "cannot be regenerated",
-      warn="contains dSYMs needed to symbolicate released builds"),
+      warn="contains dSYMs needed to symbolicate released builds", os="macos"),
 
     # --- Electron / app caches (generic globs) -----------------------------
-    S("app-cache", "low", "Library/Application Support/*/Cache", "app HTTP cache", "rebuilt on launch"),
-    S("app-code-cache", "low", "Library/Application Support/*/Code Cache", "app code cache", "rebuilt on launch"),
-    S("app-gpu-cache", "low", "Library/Application Support/*/GPUCache", "app GPU shader cache", "rebuilt on launch"),
+    S("app-cache", "low", "Library/Application Support/*/Cache", "app HTTP cache", "rebuilt on launch", os="macos"),
+    S("app-code-cache", "low", "Library/Application Support/*/Code Cache", "app code cache", "rebuilt on launch", os="macos"),
+    S("app-gpu-cache", "low", "Library/Application Support/*/GPUCache", "app GPU shader cache", "rebuilt on launch", os="macos"),
     S("app-cachestorage", "low", "Library/Application Support/*/Service Worker/CacheStorage",
-      "service worker cache", "rebuilt on launch"),
+      "service worker cache", "rebuilt on launch", os="macos"),
     S("container-cache", "low", "Library/Containers/*/Data/Library/Caches",
-      "sandboxed app cache", "rebuilt on launch"),
+      "sandboxed app cache", "rebuilt on launch", os="macos"),
+
+    # --- Windows: package managers -----------------------------------------
+    # Everything Windows keeps lives under AppData, split between Local (this
+    # machine) and Roaming (follows the user). Caches belong in Local and mostly
+    # are; the ones that landed in Roaming are there because the app put them
+    # there, not because they should follow you.
+    S("npm-cache-win", "low", "AppData/Local/npm-cache", "npm content cache",
+      "npm cache clean --force", os="windows"),
+    S("yarn-cache-win", "low", "AppData/Local/Yarn/Cache", "yarn cache", "yarn install", os="windows"),
+    S("yarn-berry-win", "low", "AppData/Local/Yarn/Berry/cache", "yarn berry global cache",
+      "yarn install", os="windows"),
+    S("pnpm-store-win", "low", "AppData/Local/pnpm/store", "pnpm content store", "pnpm install", os="windows"),
+    S("pip-cache-win", "low", "AppData/Local/pip/Cache", "pip wheel cache", "pip cache purge", os="windows"),
+    S("uv-cache-win", "low", "AppData/Local/uv/cache", "uv package cache", "uv cache clean", os="windows"),
+    S("poetry-cache-win", "low", "AppData/Local/pypoetry/Cache", "poetry cache",
+      "poetry cache clear --all .", os="windows"),
+    S("virtualenv-win", "low", "AppData/Local/pypa/virtualenv", "virtualenv seed wheels",
+      "re-downloaded on next venv", os="windows"),
+    S("go-build-win", "low", "AppData/Local/go-build", "go build cache", "go build", os="windows"),
+    S("composer-cache-win", "low", "AppData/Local/Composer", "composer cache", "composer install", os="windows"),
+    S("nuget-http-win", "low", "AppData/Local/NuGet/v3-cache", "NuGet HTTP cache", "dotnet restore", os="windows"),
+    S("nuget-plugins-win", "low", "AppData/Local/NuGet/plugins-cache", "NuGet plugin cache",
+      "dotnet restore", os="windows"),
+    S("node-gyp-win", "low", "AppData/Local/node-gyp/Cache", "node-gyp headers",
+      "re-downloaded on build", os="windows"),
+    S("playwright-win", "low", "AppData/Local/ms-playwright", "playwright browsers",
+      "npx playwright install", os="windows"),
+    S("deno-win", "low", "AppData/Local/deno", "deno module cache", "deno cache", os="windows"),
+    S("electron-win", "low", "AppData/Local/electron/Cache", "Electron binary downloads",
+      "re-downloaded on build", os="windows"),
+    S("electron-builder-win", "low", "AppData/Local/electron-builder/Cache",
+      "electron-builder downloads", "re-downloaded on build", os="windows"),
+    S("pub-cache-win", "medium", "AppData/Local/Pub/Cache", "Dart/Flutter package cache",
+      "flutter pub get", os="windows"),
+
+    # --- Windows: editors and IDEs -----------------------------------------
+    S("vscode-vsix-win", "low", "AppData/Roaming/Code/CachedExtensionVSIXs",
+      "VS Code extension installers (already installed)", "n/a", os="windows"),
+    S("vscode-cacheddata-win", "low", "AppData/Roaming/Code/CachedData",
+      "VS Code compiled JS cache", "rebuilt on launch", os="windows"),
+    S("vs-packages-win", "medium", "AppData/Local/Microsoft/VisualStudio/Packages",
+      "Visual Studio installer package cache", "re-downloaded if VS is repaired", os="windows"),
+    S("jetbrains-caches-win", "low", "AppData/Local/JetBrains/*/caches",
+      "JetBrains IDE index caches", "rebuilt on next index", os="windows"),
+    S("unity-cache-win", "low", "AppData/Local/Unity/cache", "Unity asset + package cache",
+      "re-downloaded by Unity", os="windows"),
+
+    # --- Windows itself ----------------------------------------------------
+    S("crash-dumps-win", "low", "AppData/Local/CrashDumps", "application crash dumps", "n/a", os="windows"),
+    S("wer-archive-win", "low", "AppData/Local/Microsoft/Windows/WER/ReportArchive",
+      "Windows error reports (archived)", "n/a", os="windows"),
+    S("wer-queue-win", "low", "AppData/Local/Microsoft/Windows/WER/ReportQueue",
+      "Windows error reports (queued)", "n/a", os="windows"),
+    S("inetcache-win", "low", "AppData/Local/Microsoft/Windows/INetCache",
+      "WinINet download cache", "rebuilt on use", os="windows"),
+    S("explorer-thumbs-win", "low", "AppData/Local/Microsoft/Windows/Explorer",
+      "Explorer thumbnail + icon caches", "rebuilt by Explorer", os="windows",
+      warn="the .db files are locked while Explorer is running"),
+
+    # --- Windows: Electron / app caches (generic globs) --------------------
+    S("app-cache-win", "low", "AppData/Roaming/*/Cache", "app HTTP cache", "rebuilt on launch", os="windows"),
+    S("app-code-cache-win", "low", "AppData/Roaming/*/Code Cache", "app code cache",
+      "rebuilt on launch", os="windows"),
+    S("app-gpu-cache-win", "low", "AppData/Roaming/*/GPUCache", "app GPU shader cache",
+      "rebuilt on launch", os="windows"),
+    S("app-cachestorage-win", "low", "AppData/Roaming/*/Service Worker/CacheStorage",
+      "service worker cache", "rebuilt on launch", os="windows"),
+    S("local-app-cache-win", "low", "AppData/Local/*/Cache", "app cache", "rebuilt on launch", os="windows"),
+    S("local-app-code-cache-win", "low", "AppData/Local/*/Code Cache", "app code cache",
+      "rebuilt on launch", os="windows"),
+    S("local-app-gpu-cache-win", "low", "AppData/Local/*/GPUCache", "app GPU shader cache",
+      "rebuilt on launch", os="windows"),
 
     # --- big-ticket toolchain stores (reinstallable, but slow) -------------
     S("go-modcache", "medium", "go/pkg/mod", "go module cache", "go mod download"),
@@ -164,16 +256,19 @@ STATIC_RULES = [
     # --- generic catch-alls (run last) -------------------------------------
     S("xdg-cache", "low", ".cache", "XDG cache entries", "app-specific", children=True),
     S("macos-user-cache", "low", "Library/Caches", "macOS per-app user caches",
-      "rebuilt on launch", children=True),
+      "rebuilt on launch", children=True, os="macos"),
+    S("windows-temp", "medium", "AppData/Local/Temp", "per-user temp files",
+      "rebuilt as needed", children=True, os="windows",
+      warn="an entry can belong to a running installer or app"),
     S("trash", "medium", ".Trash", "Trash contents", "cannot be undone", children=True,
-      warn="this is your Trash - check it before emptying"),
+      warn="this is your Trash - check it before emptying", os="macos"),
 
     # --- system-wide (needs --system, and root to actually delete) ---------
     S("system-cache", "high", "/Library/Caches", "system-wide caches",
-      "rebuilt by macOS", children=True, system=True,
+      "rebuilt by macOS", children=True, system=True, os="macos",
       warn="requires sudo; some entries are in use"),
     S("tmp-folders", "high", "/private/var/folders/*/*/C", "per-user temp caches",
-      "rebuilt by macOS", system=True, warn="requires sudo; may be in active use"),
+      "rebuilt by macOS", system=True, os="macos", warn="requires sudo; may be in active use"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -415,6 +510,8 @@ class Candidate:
 def discover_static(include_system: bool) -> list[Candidate]:
     found: dict[Path, Candidate] = {}
     for rule in STATIC_RULES:
+        if not rule.applies_here():
+            continue
         if rule.system and not include_system:
             continue
         if rule.glob.startswith("/"):
@@ -490,6 +587,17 @@ def _walk_up(path: Path, stop: Path | None):
         cur = cur.parent
 
 
+def _git_path(path: Path) -> str:
+    """A path in the spelling git uses.
+
+    `check-ignore --stdin` echoes back the paths it was handed, and git speaks
+    forward slashes on every platform. Handing it a Windows path verbatim gets
+    back something that no longer matches the key we look it up by, and a miss
+    here silently drops a finding - so both ends go through this.
+    """
+    return str(path).replace("\\", "/") if os.name == "nt" else str(path)
+
+
 def filter_gitignored(pending: list[tuple[Path, ArtifactRule]]) -> list[tuple[Path, ArtifactRule]]:
     """Keep only paths that git already ignores (proof they are build output)."""
     cache: dict = {}
@@ -501,7 +609,7 @@ def filter_gitignored(pending: list[tuple[Path, ArtifactRule]]) -> list[tuple[Pa
         by_repo.setdefault(root, []).append((path, rule))
     kept: list[tuple[Path, ArtifactRule]] = []
     for root, items in by_repo.items():
-        payload = "\n".join(str(p) for p, _ in items)
+        payload = "\n".join(_git_path(p) for p, _ in items)
         try:
             res = subprocess.run(
                 ["git", "-C", str(root), "check-ignore", "--stdin"],
@@ -511,7 +619,7 @@ def filter_gitignored(pending: list[tuple[Path, ArtifactRule]]) -> list[tuple[Pa
             continue
         ignored = {line.strip() for line in res.stdout.splitlines() if line.strip()}
         for path, rule in items:
-            if str(path) in ignored:
+            if _git_path(path) in ignored:
                 kept.append((path, rule))
     return kept
 
@@ -992,7 +1100,10 @@ def allowed_roots_for(args) -> list[Path]:
         p = Path(r).expanduser().resolve()
         if p != Path("/") and len(p.parts) >= 2:
             roots.append(p)
-    if os.geteuid() == 0 and getattr(args, "system", False):
+    # geteuid is unix-only, and every --system rule is macOS-only anyway, so
+    # asking on Windows is both impossible and pointless.
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    if is_root and getattr(args, "system", False):
         roots += [Path("/Library/Caches"), Path("/private/var/folders")]
     return roots
 
@@ -1174,7 +1285,7 @@ def rules_document() -> dict:
     is safe to delete. `gui/rules.generated.json` is checked against this in CI.
     """
     return {
-        "schema": 1,
+        "schema": 2,
         "version": VERSION,
         "tiers": list(TIER_ORDER),
         "forbidden_parts": sorted(FORBIDDEN_PARTS),
@@ -1184,7 +1295,7 @@ def rules_document() -> dict:
             {
                 "id": r.id, "tier": r.tier, "glob": r.glob, "label": r.label,
                 "regen": r.regen, "children": r.children, "warn": r.warn,
-                "system": r.system,
+                "system": r.system, "os": r.os,
             }
             for r in STATIC_RULES
         ],
@@ -1216,8 +1327,12 @@ def cmd_tools(args) -> int:
         if note:
             print(DIM(f"  {' ' * width}  {note}"))
     print()
-    print(BOLD("Rules cachereaper knows about"))
+    # The rules for this machine only. Listing the Windows table on a Mac would
+    # pad it out with three dozen rules that can never fire here.
+    print(BOLD(f"Rules cachereaper knows about ({PLATFORM})"))
     for rule in STATIC_RULES:
+        if not rule.applies_here():
+            continue
         print(f"  {TIER_PAINT[rule.tier](rule.tier[:3]):<4} {rule.id:<24} {DIM(rule.label)}")
     for name, rules in sorted(ARTIFACT_RULES.items()):
         for rule in rules:
