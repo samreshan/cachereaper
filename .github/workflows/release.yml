@@ -31,12 +31,12 @@ jobs:
             os: macos-latest
             target: universal-apple-darwin
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
-            bundles: app,dmg
+            bundles: app dmg
           - label: Windows (x64)
             os: windows-latest
             target: x86_64-pc-windows-msvc
             rust-targets: x86_64-pc-windows-msvc
-            bundles: nsis,msi
+            bundles: nsis msi
 
     steps:
       - uses: actions/checkout@v4
