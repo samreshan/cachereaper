@@ -119,6 +119,12 @@ start empty, so pressing `d` immediately does the conservative thing.
 | `--system` | also `/Library/Caches`, `/private/var/folders` (sudo to delete) |
 | `--json` | machine-readable output |
 
+`cachereaper update` is the only command that touches the network, and it only
+does so when you run it. It reports what the newest release is; `--install`
+downloads that version and replaces the file you ran, atomically, leaving the
+old one intact if anything goes wrong. A copy installed by pip says so and
+points you back at pip instead.
+
 ## The desktop app
 
 A treemap with the risk tiers painted on top. GrandPerspective shows you what is
@@ -156,6 +162,30 @@ scan after an update asks once more.
 Colour carries one meaning: tiers stay saturated, anything unclaimed drains to
 grey so it recedes. Dragging a box across a `node_modules` means *that folder*,
 not *those 400 files*.
+
+### Updates
+
+The app asks the release page whether there is a newer build each time it opens,
+and says nothing unless there is. When there is, a card at the top of the panel
+names the version and offers to install it — one click, and it downloads,
+replaces itself and restarts. Nothing about your machine is sent, and nothing is
+installed without being asked for: this tool deletes files, so the binary that
+does that is not something to swap out quietly.
+
+The bottom of the panel has the version, a **Check for updates** button for
+asking on the spot, and a **check on launch** switch if you would rather it
+didn't. The switch does not affect the button.
+
+Every release is signed with a key whose public half is compiled into the app,
+and a download that does not match it is refused rather than installed — which
+also means the update path does not care that the app is unsigned as far as
+Gatekeeper is concerned. An update installed this way is never quarantined, so
+there is no `xattr` step and no Privacy & Security detour on the way to it —
+only the folder permissions, which macOS ties to the build and which the first
+scan afterwards asks for again.
+
+Copies of 1.4.0 and earlier have no updater in them and have to be replaced once,
+by hand, before they can start doing this themselves.
 
 ## Risk tiers
 

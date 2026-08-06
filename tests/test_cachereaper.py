@@ -339,5 +339,63 @@ class TestStaticRuleSanity(unittest.TestCase):
             self.assertEqual(cr.path_is_protected(probe), "", rule.id)
 
 
+class TestUpdate(unittest.TestCase):
+    """The update path, minus the network. Nothing here reaches GitHub: the two
+    functions that do are the thin ends, and everything that decides whether a
+    download is allowed to overwrite a working program is tested here."""
+
+    def test_versions_compare_as_numbers_not_strings(self):
+        self.assertGreater(cr.version_tuple("1.10.0"), cr.version_tuple("1.9.0"))
+        self.assertGreater(cr.version_tuple("2.0.0"), cr.version_tuple("1.99.99"))
+        self.assertEqual(cr.version_tuple("v1.4.0"), cr.version_tuple("1.4.0"))
+
+    def test_a_prerelease_is_not_behind_the_release_it_precedes(self):
+        # Otherwise an rc offers to "update" itself to the version it already is.
+        self.assertEqual(cr.version_tuple("1.5.0-rc1"), cr.version_tuple("1.5.0"))
+
+    def test_odd_versions_do_not_raise(self):
+        self.assertEqual(cr.version_tuple("1.4"), (1, 4))
+        self.assertEqual(cr.version_tuple("what"), (0,))
+
+    def test_the_shipped_file_passes_its_own_download_check(self):
+        source = Path(cr.__file__).read_text(encoding="utf-8")
+        cr.check_downloaded(source, f"v{cr.VERSION}")
+
+    def test_a_download_that_is_not_the_program_is_refused(self):
+        real = Path(cr.__file__).read_text(encoding="utf-8")
+        tag = f"v{cr.VERSION}"
+        cases = {
+            "an error page": "<html><body>404</body></html>",
+            "a truncated file": real[:5000],
+            "the wrong version": real.replace(f'VERSION = "{cr.VERSION}"', 'VERSION = "0.0.1"'),
+            "mangled syntax": real.replace("def main(", "def main("[:-1] + "(("),
+        }
+        for why, payload in cases.items():
+            with self.subTest(why):
+                with self.assertRaises(Exception):
+                    cr.check_downloaded(payload, tag)
+
+    def test_replacing_keeps_the_mode_and_leaves_no_scratch_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "cachereaper"
+            target.write_text("#!/usr/bin/env python3\nold\n", encoding="utf-8")
+            target.chmod(0o755)
+
+            cr.replace_self("#!/usr/bin/env python3\nnew\n", target)
+
+            self.assertEqual(target.read_text(encoding="utf-8").strip().splitlines()[-1], "new")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+            self.assertFalse((Path(tmp) / "cachereaper.new").exists())
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), ["cachereaper"])
+
+    def test_update_is_the_only_command_that_can_reach_the_network(self):
+        # A disk tool that phoned home on every scan would be a different tool.
+        source = Path(cr.__file__).read_text(encoding="utf-8")
+        before, _, after = source.partition("# updates")
+        self.assertNotIn("urllib", before, "nothing before the update section may import urllib")
+        self.assertNotIn("urllib", after.split("def build_parser")[1],
+                         "nothing after the update section may import urllib")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

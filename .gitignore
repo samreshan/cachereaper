@@ -20,3 +20,9 @@ gui/dist/snapshot.json
 # tauri build output
 gui/src-tauri/target/
 gui/src-tauri/gen/schemas/
+
+# updater signing keys. The private half lives in ~/.tauri and in a repository
+# secret, never here — see RELEASING.md. This is here so a pair generated into
+# the working tree by accident cannot be committed.
+*.key
+*.key.pub

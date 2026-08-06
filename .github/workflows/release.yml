@@ -10,6 +10,18 @@ name: release
 # `workflow_dispatch` builds and keeps the bundles as workflow artifacts without
 # publishing anything, so a change to the build can be proven before a tag exists
 # to attach it to. Pushing a `v*` tag is what creates the release.
+#
+# This is also where updates come from. Every release carries a `latest.json`
+# saying which version is newest and where each platform's payload is, plus a
+# minisign signature over each payload. The app checks that one file and refuses
+# anything the signature does not match, so `TAURI_SIGNING_PRIVATE_KEY` has to be
+# set for the build to produce a release the app will accept — the preflight step
+# below fails in seconds rather than after a twenty-minute build if it is not.
+#
+# Updater artifacts are switched on here rather than in tauri.conf.json on
+# purpose: with `createUpdaterArtifacts` committed, every build from source would
+# demand a private key nobody but the maintainer has, and building from source is
+# the documented way to avoid the signing question entirely.
 
 on:
   push:
@@ -38,8 +50,26 @@ jobs:
             rust-targets: x86_64-pc-windows-msvc
             bundles: nsis msi
 
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
     steps:
       - uses: actions/checkout@v4
+
+      # Before anything expensive. Without the key the bundler gets all the way
+      # to packaging and only then refuses, having spent the whole build.
+      - name: Check the updater signing key is set
+        shell: bash
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set. Generate a pair with"
+            echo "::error::  cargo tauri signer generate -w ~/.tauri/cachereaper.key"
+            echo "::error::then add the private half as a repository secret. The public half"
+            echo "::error::belongs in gui/src-tauri/tauri.conf.json under plugins.updater.pubkey,"
+            echo "::error::and must be the partner of this one or installed apps reject the update."
+            exit 1
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -66,21 +96,74 @@ jobs:
       # for a `src-tauri` directory beneath the one it was run in.
       - name: Build
         working-directory: gui
-        run: tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+        shell: bash
+        run: |
+          tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} \
+            --config '{"bundle":{"createUpdaterArtifacts":true}}'
 
       # Stable, version-free names: the landing page links straight at
       # `releases/latest/download/<name>`, which only resolves if the name does
       # not change from one release to the next.
+      #
+      # Alongside the installers, each platform's update payload and the
+      # signature over it. A payload is a different thing from an installer —
+      # macOS updates from a tarball of the .app because a .dmg cannot be applied
+      # unattended — so it is published as its own asset. The signatures are not:
+      # they end up inside latest.json, which is the only place the app reads
+      # them from.
       - name: Collect the bundles
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p release
           out="gui/src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          # The fragment carries a filename rather than a URL: only the publish
+          # job knows the tag, and a dispatch build would otherwise bake the
+          # branch name into a link that has to resolve for years.
+          entry() { printf '  "%s": { "signature": "%s", "file": "%s" }' "$1" "$2" "$3"; }
+
           if [ "${{ runner.os }}" = "macOS" ]; then
             cp "$(ls "$out"/dmg/*.dmg | head -1)" release/cachereaper-macos-universal.dmg
+
+            sig="$(ls "$out"/macos/*.app.tar.gz.sig | head -1)"
+            payload="cachereaper-macos-universal.app.tar.gz"
+            cp "${sig%.sig}" "release/$payload"
+
+            # One universal build answers for both architectures, so both keys
+            # point at the same file. A Mac asks for the key matching the slice
+            # it is running, not the slices the file contains.
+            {
+              printf '{\n'
+              entry "darwin-aarch64" "$(cat "$sig")" "$payload"; printf ',\n'
+              entry "darwin-x86_64"  "$(cat "$sig")" "$payload"; printf '\n'
+              printf '}\n'
+            } > release/updater-macos.json
           else
             cp "$(ls "$out"/nsis/*-setup.exe | head -1)" release/cachereaper-windows-x64-setup.exe
             cp "$(ls "$out"/msi/*.msi | head -1)" release/cachereaper-windows-x64.msi
+
+            # Tauri 2 signs the NSIS installer itself; older layouts wrapped it
+            # in a zip first. Both are handled rather than assumed, because the
+            # failure mode of assuming is a release that installs fine and can
+            # never update itself again.
+            sig="$(ls "$out"/nsis/*.sig | head -1)"
+            src="${sig%.sig}"
+            case "$src" in
+              *-setup.exe)
+                payload="cachereaper-windows-x64-setup.exe" ;;   # already copied
+              *.nsis.zip)
+                payload="cachereaper-windows-x64-setup.nsis.zip"
+                cp "$src" "release/$payload" ;;
+              *)
+                echo "::error::unrecognised Windows updater artifact: $src"; exit 1 ;;
+            esac
+
+            {
+              printf '{\n'
+              entry "windows-x86_64" "$(cat "$sig")" "$payload"; printf '\n'
+              printf '}\n'
+            } > release/updater-windows.json
           fi
           ls -l release
 
@@ -96,12 +179,56 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      # Whole history, for the tag object: an annotated tag's message becomes the
+      # release note the update card shows, so `git tag -a v1.5.0 -m "..."` is
+      # what people see inside the app when they are offered it.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
           path: bundles
           merge-multiple: true
+
+      # The manifest installed apps poll. Assembled here rather than in the build
+      # jobs because it has to describe both platforms at once, and only this job
+      # has both halves.
+      - name: Build latest.json
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+
+          notes="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed '/^-----BEGIN/,$d')"
+          [ -n "${notes//[[:space:]]/}" ] || notes="cachereaper $version"
+
+          jq -s 'add' bundles/updater-*.json \
+            | jq --arg base "$base" '
+                with_entries(.value = {
+                  signature: .value.signature,
+                  url: ($base + "/" + .value.file)
+                })' > platforms.json
+
+          jq -n --arg version "$version" \
+                --arg notes "$notes" \
+                --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --slurpfile platforms platforms.json \
+                '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms[0]}' \
+                > latest.json
+
+          # Every platform the app is built for must be in there. A manifest
+          # missing one is a manifest that silently stops updating half the
+          # users, and it would publish without complaint.
+          for key in darwin-aarch64 darwin-x86_64 windows-x86_64; do
+            jq -e --arg k "$key" '.platforms[$k].signature | length > 0' latest.json >/dev/null \
+              || { echo "::error::latest.json has no signed payload for $key"; exit 1; }
+          done
+          cat latest.json
+
+          # The fragments were scaffolding, and the signatures they carried now
+          # live in latest.json. Neither belongs on the release page.
+          rm -f bundles/updater-*.json bundles/*.sig
 
       - name: Publish
         env:
@@ -127,9 +254,15 @@ jobs:
           * **Windows** — SmartScreen shows "Windows protected your PC". Choose
             **More info → Run anyway**.
 
-          The Python CLI is unchanged and still a single file with no dependencies.
+          Already have it installed? It will offer this itself the next time you
+          open it. `latest.json` and `cachereaper-macos-universal.app.tar.gz` are
+          how that works — the app reads the first and applies the second, and
+          neither is something to download by hand.
+
+          The Python CLI is a single file with no dependencies, and knows how to
+          replace itself: `cachereaper update`.
           NOTES
           gh release create "$GITHUB_REF_NAME" \
             --title "cachereaper $version" \
             --notes-file notes.md \
-            bundles/*
+            latest.json bundles/*

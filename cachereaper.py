@@ -28,7 +28,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
+REPO = "samreshan/cachereaper"
 HOME = Path.home()
 LOG_DIR = HOME / ".cachereaper"
 
@@ -1342,6 +1343,148 @@ def cmd_tools(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# updates
+# ---------------------------------------------------------------------------
+#
+# Only ever when asked. The desktop app looks on launch because it has a window
+# to put the answer in and a switch to turn it off with; a command-line tool that
+# reached the network every time you asked it about your own disk would be
+# something else, so `update` is a subcommand and nothing else calls it.
+
+RELEASES = f"https://github.com/{REPO}/releases"
+SOURCE_URL = f"https://raw.githubusercontent.com/{REPO}/{{tag}}/cachereaper.py"
+
+
+def version_tuple(text: str):
+    """`"1.10.0"` sorts after `"1.9.0"`, which is the whole point of not
+    comparing these as strings. A pre-release suffix is dropped rather than
+    ranked: `1.5.0-rc1` and `1.5.0` compare equal here, so an rc never reports
+    itself as behind the release it precedes."""
+    core = text.strip().lstrip("v").split("-")[0].split("+")[0]
+    parts = []
+    for piece in core.split("."):
+        digits = "".join(c for c in piece if c.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
+def latest_tag(timeout: float = 10.0) -> str:
+    """The newest release tag, read out of where /releases/latest redirects to.
+
+    Deliberately not the JSON API: that is rate-limited per IP, shares its
+    budget with every other unauthenticated caller behind the same address, and
+    starts refusing at exactly the moment a lot of people are updating. The
+    redirect has no such limit and carries the one fact needed.
+    """
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"{RELEASES}/latest",
+        headers={"User-Agent": f"cachereaper/{VERSION}"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        final = response.geturl()
+    tag = final.rstrip("/").rsplit("/", 1)[-1]
+    if not tag.startswith("v"):
+        raise RuntimeError(f"unexpected release URL: {final}")
+    return tag
+
+
+def fetch_source(tag: str, timeout: float = 30.0) -> str:
+    import urllib.request
+
+    request = urllib.request.Request(
+        SOURCE_URL.format(tag=tag),
+        headers={"User-Agent": f"cachereaper/{VERSION}"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read().decode("utf-8")
+
+
+def check_downloaded(source: str, tag: str) -> None:
+    """Refuse anything that is not the file we asked for.
+
+    There is no signature here — this is the same trust as `git pull` on the
+    repository, over HTTPS — so what these checks are actually defending against
+    is the ordinary accident: a truncated download, a proxy's error page, a tag
+    that moved. Each one would otherwise be written over a working program.
+    """
+    if not source.startswith("#!"):
+        raise RuntimeError("that download is not a script")
+    if f'VERSION = "{tag.lstrip("v")}"' not in source:
+        raise RuntimeError(f"the download does not call itself {tag.lstrip('v')}")
+    if "def main(" not in source or len(source) < 20_000:
+        raise RuntimeError("the download is incomplete")
+    compile(source, "cachereaper.py", "exec")  # SyntaxError if it is mangled
+
+
+def replace_self(source: str, target: Path) -> None:
+    """Write beside the running file and rename over it.
+
+    The rename is atomic, so an interrupted update leaves the old program intact
+    rather than half of the new one. It also means the currently running process
+    is unaffected: it is already loaded, and Python does not re-read the file.
+    """
+    scratch = target.parent / f"{target.name}.new"
+    scratch.write_text(source, encoding="utf-8")
+    scratch.chmod(target.stat().st_mode & 0o7777)
+    os.replace(scratch, target)
+
+
+def cmd_update(args) -> int:
+    target = Path(__file__).resolve()
+
+    print()
+    print(f"  you have    {BOLD(VERSION)}")
+    try:
+        tag = latest_tag()
+    except Exception as exc:  # noqa: BLE001 - any network failure reads the same
+        print(f"  {YELLOW('could not reach the release page')}  {DIM(str(exc))}")
+        print(f"  {DIM(RELEASES)}\n")
+        return 1
+
+    newest = tag.lstrip("v")
+    print(f"  newest is   {BOLD(newest)}")
+    print()
+
+    if version_tuple(newest) <= version_tuple(VERSION):
+        print(f"  {GREEN('nothing to do')} — this is the newest release\n")
+        return 0
+
+    print(f"  {CYAN(f'{newest} is out')}  {DIM(f'{RELEASES}/tag/{tag}')}")
+
+    if not args.install:
+        print(f"\n  install it:  {BOLD('cachereaper update --install')}")
+        print(f"  {DIM('or, if you run it from a clone: git pull')}\n")
+        return 0
+
+    # A pip install owns its own files, and writing into site-packages behind
+    # pip's back leaves it reporting a version that is no longer there.
+    if "site-packages" in target.parts or "dist-packages" in target.parts:
+        print(f"\n  {YELLOW('this copy was installed by pip')} — update it the same way:")
+        print(f"  {BOLD('pip install --upgrade cachereaper')}\n")
+        return 1
+    if not os.access(target, os.W_OK):
+        print(f"\n  {YELLOW('cannot write')} {target}")
+        print(f"  {DIM('re-run where you can write it, or reinstall over it')}\n")
+        return 1
+
+    print(f"  downloading {DIM(SOURCE_URL.format(tag=tag))}")
+    try:
+        source = fetch_source(tag)
+        check_downloaded(source, tag)
+        replace_self(source, target)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\n  {YELLOW('update failed')}  {exc}")
+        print(f"  {DIM('nothing was changed — ' + str(target) + ' is untouched')}\n")
+        return 1
+
+    print(f"\n  {GREEN('updated')}  {target} is now {newest}")
+    print(f"  {DIM('this process is still running the old one — start it again')}\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cachereaper",
@@ -1401,6 +1544,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_dump = sub.add_parser("dump-rules", help="print the rule tables as JSON (consumed by the GUI)")
     p_dump.set_defaults(func=cmd_dump_rules)
+
+    p_update = sub.add_parser("update", help="check for a newer release (the only command that uses the network)")
+    p_update.add_argument("--install", action="store_true",
+                          help="download it and replace this file")
+    p_update.set_defaults(func=cmd_update)
 
     return parser
 

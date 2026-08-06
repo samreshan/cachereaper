@@ -8,6 +8,11 @@
 # dev run ships a listing of whoever's home directory was scanned last, inside
 # the .dmg, to everyone who downloads it. That file is removed here rather than
 # in .gitignore, because gitignore does not stop the bundler from reading it.
+#
+# This builds an app, not a release. It deliberately produces no signed update
+# payload and no latest.json — that needs the private key, and asking every
+# source build for a key nobody but the maintainer has would defeat the point of
+# building from source. Releases come from pushing a tag; see RELEASING.md.
 
 set -euo pipefail
 

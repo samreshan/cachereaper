@@ -5,6 +5,10 @@
 #   ./install.sh v1.1.1          # a specific tag
 #   DEST=~/Applications ./install.sh
 #
+# For the first install. After that the app updates itself: it checks on launch
+# and offers what it finds, and an update it downloads is never quarantined, so
+# none of what follows applies to one.
+#
 # Why this exists.
 #
 # The app is signed ad-hoc, not with an Apple Developer ID, because a Developer

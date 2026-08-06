@@ -46,14 +46,23 @@ pub fn purge(targets: &[Target], allowed: &[PathBuf], dry_run: bool) -> PurgeRes
     let mut log = if dry_run {
         None
     } else {
-        log_path()
-            .and_then(|p| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(p)
-            })
-            .ok()
+        match log_path().and_then(|p| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+        }) {
+            Ok(file) => Some(file),
+            Err(err) => {
+                // The audit trail is part of the deletion contract. Quietly
+                // continuing here makes the GUI less accountable than the CLI
+                // and leaves no record of what disappeared.
+                result
+                    .skipped
+                    .push(format!("deletion aborted: could not open the audit log: {err}"));
+                return result;
+            }
+        }
     };
 
     for target in targets {

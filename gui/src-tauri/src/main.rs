@@ -11,6 +11,14 @@
 // The access commands are the other half of that care. Reading a gated folder is
 // what raises a macOS consent dialog, so exactly one command here can do it, and
 // only when the user just asked — see `cachereaper_core::access`.
+//
+// Updating is held to the same rule. The webview is never given the updater's
+// own permissions — `capabilities/default.json` grants `core:default` and
+// nothing else — so it cannot reach an endpoint, hand back a manifest or start a
+// download. It can only ask the commands below, and none of them takes a URL, a
+// version or a path: where to look is compiled in from tauri.conf.json, and what
+// arrives is refused unless it is signed by the key whose public half is
+// compiled in beside it.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -25,6 +33,7 @@ use cachereaper_core::{allowed_roots, default_threads, purge, scan_with_markers,
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// Roots the user has actually scanned this session. Deletion is confined to
 /// $HOME plus these, so a scan of an external volume can be cleaned but nothing
@@ -32,9 +41,15 @@ use tauri_plugin_dialog::DialogExt;
 ///
 /// `config` is the same file on disk, held in memory so a launch can draw the
 /// permission rows without touching a gated folder to find out.
+///
+/// `pending_update` holds whatever the last check turned up. Installing works
+/// from that value rather than fetching the manifest a second time, so what gets
+/// written over the app is the exact build whose version the user was shown and
+/// agreed to — not whatever the feed happens to say a moment later.
 struct Session {
     scanned_roots: Mutex<Vec<PathBuf>>,
     config: Mutex<Config>,
+    pending_update: Mutex<Option<Update>>,
 }
 
 impl Session {
@@ -42,6 +57,7 @@ impl Session {
         Session {
             scanned_roots: Mutex::new(Vec::new()),
             config: Mutex::new(config::load()),
+            pending_update: Mutex::new(None),
         }
     }
 }
@@ -425,9 +441,235 @@ fn reveal(app: tauri::AppHandle, path: String) -> Result<(), String> {
     status.map(|_| ()).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// updates
+// ---------------------------------------------------------------------------
+
+/// A build that is newer than this one, as the panel describes it.
+#[derive(Serialize, Clone)]
+struct UpdateInfo {
+    version: String,
+    current: String,
+    notes: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// Ask the release feed, and keep whatever it offers.
+///
+/// `Ok(None)` is "you already have the newest one" and is a normal answer, not a
+/// failure — the distinction matters because a manual check has to say something
+/// either way, and being offline should not read as being up to date.
+async fn look_for_update(app: &tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let found = updater.check().await.map_err(|e| e.to_string())?;
+
+    let Some(update) = found else {
+        if let Some(session) = app.try_state::<Session>() {
+            *session.pending_update.lock().unwrap() = None;
+        }
+        return Ok(None);
+    };
+
+    let info = UpdateInfo {
+        version: update.version.clone(),
+        current: update.current_version.clone(),
+        notes: update.body.clone(),
+    };
+    if let Some(session) = app.try_state::<Session>() {
+        *session.pending_update.lock().unwrap() = Some(update);
+    }
+    Ok(Some(info))
+}
+
+/// Look now. Called on launch when the setting allows it, and by the button in
+/// the panel whenever the user asks — the same code either way, because a manual
+/// check that took a different path is a manual check that can rot separately.
+#[tauri::command]
+async fn update_check(app: tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    look_for_update(&app).await
+}
+
+/// Download the waiting build, replace this one with it, and start it again.
+///
+/// The bytes are verified against the compiled-in public key before anything is
+/// written; an unsigned or tampered payload fails here rather than being
+/// installed. Nothing about the machine is uploaded — this is a GET and a
+/// replace.
+///
+/// On Windows the installer takes over and ends this process itself, so the
+/// restart below is only ever reached on macOS.
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
+    let waiting = app
+        .try_state::<Session>()
+        .and_then(|session| session.pending_update.lock().unwrap().clone());
+    let update = waiting.ok_or_else(|| "no update is waiting — check again".to_string())?;
+
+    // An atomic keeps the running total independent of callback capture rules
+    // and makes a future concurrent downloader safe as well.
+    let handle = app.clone();
+    let downloaded = std::sync::atomic::AtomicU64::new(0);
+    update
+        .download_and_install(
+            move |chunk, total| {
+                let so_far = downloaded.fetch_add(chunk as u64, std::sync::atomic::Ordering::Relaxed)
+                    + chunk as u64;
+                let _ = handle.emit(
+                    "update-progress",
+                    UpdateProgress {
+                        downloaded: so_far,
+                        total,
+                    },
+                );
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.restart()
+}
+
+/// Turn the launch check on or off. The manual button is unaffected by it.
+#[tauri::command]
+fn set_auto_update(app: tauri::AppHandle, on: bool) -> Result<(), String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let mut config = session.config.lock().unwrap();
+    config.auto_update = on;
+    config::save(&config).map_err(|e| e.to_string())
+}
+
+/// What this build calls itself, so the panel can show it without a second copy
+/// of the version number living in the frontend.
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// support
+// ---------------------------------------------------------------------------
+
+const DAY_SECONDS: u64 = 24 * 60 * 60;
+const GITHUB_URL: &str = "https://github.com/samreshan/cachereaper";
+const COFFEE_URL: &str = "https://buymeacoffee.com/samreshan";
+
+#[derive(Serialize)]
+struct SupportPromptState {
+    show: bool,
+    next_at: Option<u64>,
+}
+
+fn unix_seconds() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|e| format!("system clock is before 1970: {e}"))
+}
+
+/// Pick a point from 24 through 48 hours from now. This is presentation
+/// jitter, not security-sensitive randomness: mixing the sub-second clock with
+/// the process id is enough to keep every install from prompting in lockstep.
+fn next_support_prompt(now: u64) -> u64 {
+    let entropy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos() as u64)
+        .unwrap_or(0)
+        ^ std::process::id() as u64;
+    now.saturating_add(DAY_SECONDS + entropy % (DAY_SECONDS + 1))
+}
+
+/// Schedule the first prompt, or report that the saved time has arrived.
+#[tauri::command]
+fn support_prompt_status(app: tauri::AppHandle) -> Result<SupportPromptState, String> {
+    let now = unix_seconds()?;
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let mut config = session.config.lock().unwrap();
+
+    if config.support_prompt_disabled {
+        return Ok(SupportPromptState {
+            show: false,
+            next_at: None,
+        });
+    }
+
+    if config.support_prompt_at.is_none() {
+        config.support_prompt_at = Some(next_support_prompt(now));
+        config::save(&config).map_err(|e| e.to_string())?;
+    }
+
+    Ok(SupportPromptState {
+        show: config.support_prompt_at.is_some_and(|at| now >= at),
+        next_at: config.support_prompt_at,
+    })
+}
+
+/// "Later" starts a fresh random 24–48 hour interval.
+#[tauri::command]
+fn support_prompt_later(app: tauri::AppHandle) -> Result<SupportPromptState, String> {
+    let now = unix_seconds()?;
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let mut config = session.config.lock().unwrap();
+    config.support_prompt_at = Some(next_support_prompt(now));
+    config::save(&config).map_err(|e| e.to_string())?;
+    Ok(SupportPromptState {
+        show: false,
+        next_at: config.support_prompt_at,
+    })
+}
+
+/// Permanent opt-out for the card. The footer link is deliberately unaffected.
+#[tauri::command]
+fn support_prompt_never(app: tauri::AppHandle) -> Result<(), String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let mut config = session.config.lock().unwrap();
+    config.support_prompt_disabled = true;
+    config.support_prompt_at = None;
+    config::save(&config).map_err(|e| e.to_string())
+}
+
+/// Open one of two fixed support pages without accepting a URL from the webview.
+#[tauri::command]
+fn open_support_page(destination: String) -> Result<(), String> {
+    let url = match destination.as_str() {
+        "coffee" => COFFEE_URL,
+        "github" => GITHUB_URL,
+        _ => return Err(format!("unknown support destination: {destination}")),
+    };
+
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(url).status();
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
+        .status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let status = std::process::Command::new("xdg-open").arg(url).status();
+
+    match status {
+        Ok(exit) if exit.success() => Ok(()),
+        Ok(exit) => Err(format!("could not open the support page: {exit}")),
+        Err(err) => Err(format!("could not open the support page: {err}")),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Session::load())
         .invoke_handler(tauri::generate_handler![
             scan_home,
@@ -440,7 +682,15 @@ fn main() {
             full_disk_status,
             open_privacy_settings,
             config_get,
-            set_seen_onboarding
+            set_seen_onboarding,
+            update_check,
+            update_install,
+            set_auto_update,
+            app_version,
+            support_prompt_status,
+            support_prompt_later,
+            support_prompt_never,
+            open_support_page
         ])
         .run(tauri::generate_context!())
         .expect("failed to start cachereaper");

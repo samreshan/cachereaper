@@ -340,6 +340,118 @@ body.mode-select #mode-hint { display: block; }
   line-height: 1.4;
 }
 
+/* ------------------------------------------------------------- updates -- */
+
+/* Tinted with the accent, which is the app's "this is information" colour — the
+   one card in the panel that is news rather than a control, and the only place
+   blue appears outside the onboarding buttons. */
+#update-card {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+}
+#update-card[hidden] { display: none; }
+#update-card #update-headline { font-weight: 600; }
+/* Not the even split .buttons gives by default: at 306px "Install and restart"
+   wraps onto two lines against an equal share, and Later needs far less. */
+#update-install { flex: 1.9; }
+#update-notes {
+  margin: 0 0 9px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  /* Release notes are written for a release page, not for a 306px column, so
+     the card shows the opening of them and stops rather than growing to
+     whatever length the notes happen to be. */
+  max-height: 6.5em;
+  overflow: hidden;
+}
+#update-notes[hidden] { display: none; }
+#update-fineprint {
+  margin: 9px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* The version and its two controls. Separated from the findings above it the
+   same way the access warning is, because it is the end of the panel rather
+   than more of it. */
+#about {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 10px;
+  font-size: 12px;
+}
+#about .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#about button { font-size: 12px; }
+#update-status {
+  margin: 8px 0 0;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.45;
+}
+#update-status[hidden] { display: none; }
+#update-auto-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+#update-auto-row input { margin: 0; accent-color: var(--accent); }
+
+/* -------------------------------------------------------------- support -- */
+
+#support-card {
+  border-color: color-mix(in srgb, var(--brand) 32%, var(--line));
+  background: color-mix(in srgb, var(--brand) 5%, var(--bg));
+}
+#support-card[hidden] { display: none; }
+#support-card > strong { font-weight: 600; }
+#support-card > p {
+  margin: 5px 0 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+#support-card .support-actions {
+  display: grid;
+  gap: 6px;
+}
+#support-card .support-actions button {
+  width: 100%;
+  padding: 6px 9px;
+  font-size: 12px;
+}
+#support-card .support-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 7px 0 -2px;
+  color: var(--text-faint);
+}
+#support-card .text-button {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+#support-card .text-button:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+}
+#support-about {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--text-faint);
+}
+
 /* Bone on the reaper's red — the mark's own contrast pair, on the one control
    that actually reaps. */
 #delete {

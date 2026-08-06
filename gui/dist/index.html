@@ -71,6 +71,42 @@
           <span><i class="swatch none"></i>unclassified</span>
         </div>
 
+        <!-- Above the selection because it is the one thing here that is news.
+             Hidden until a check finds something, so the panel of an app that is
+             already current is exactly as it was before this existed. -->
+        <section id="update-card" class="card" hidden>
+          <div class="row">
+            <strong id="update-headline">Update available</strong>
+            <span id="update-version" class="mono"></span>
+          </div>
+          <p id="update-notes" hidden></p>
+          <div class="row buttons">
+            <button id="update-install" class="primary">Install and restart</button>
+            <button id="update-later" class="ghost">Later</button>
+          </div>
+          <p id="update-fineprint">
+            Downloaded from the release page and checked against the key built
+            into this app. Nothing is sent about this machine.
+          </p>
+        </section>
+
+        <section id="support-card" class="card" hidden>
+          <strong>Useful tool, tiny team</strong>
+          <p>
+            cachereaper is free and open source. If it saved you some space,
+            you can support Samreshan by starring or sharing the project.
+          </p>
+          <div class="support-actions">
+            <button id="support-coffee" class="primary">Buy me a coffee ↗</button>
+            <button id="support-github" class="ghost">☆ Star on GitHub ↗</button>
+          </div>
+          <div class="support-dismiss">
+            <button id="support-later" class="text-button">Later</button>
+            <span aria-hidden="true">·</span>
+            <button id="support-never" class="text-button">Don’t show this again</button>
+          </div>
+        </section>
+
         <section id="selection-box" class="card">
           <div class="row">
             <strong id="selected-count">Nothing selected</strong>
@@ -94,6 +130,25 @@
           <p id="warning-text"></p>
           <button id="review-access" class="ghost">Review access</button>
         </div>
+
+        <!-- The version, and the two controls that go with it. Last in the
+             panel: it is the thing you go looking for, not the thing you are
+             here for. -->
+        <footer id="about">
+          <div class="row">
+            <span id="app-version" class="mono">cachereaper</span>
+            <button id="update-look" class="ghost">Check for updates</button>
+          </div>
+          <p id="update-status" hidden></p>
+          <label id="update-auto-row">
+            <input type="checkbox" id="update-auto" />
+            <span>check on launch</span>
+          </label>
+          <div id="support-about" class="row">
+            <span>Free &amp; open source</span>
+            <button id="support-open" class="ghost">Support the dev ↗</button>
+          </div>
+        </footer>
       </aside>
     </main>
 

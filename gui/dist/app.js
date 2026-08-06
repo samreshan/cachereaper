@@ -119,8 +119,20 @@ function browserStub() {
     find(id).state = state;
     return { ...find(id) };
   };
+  // Add ?update to the dev URL to work on the update card without cutting a
+  // release to have something to be behind.
+  const pretendBehind = new URLSearchParams(location.search).has("update");
+  const pretendSupport = new URLSearchParams(location.search).has("support");
+  let nextSupportAt = pretendSupport ? 0 : Math.floor(Date.now() / 1000) + 86_400;
+  let supportDisabled = false;
   return {
-    config_get: async () => ({ seen_onboarding: false, access: {} }),
+    config_get: async () => ({
+      seen_onboarding: false,
+      access: {},
+      auto_update: true,
+      support_prompt_at: null,
+      support_prompt_disabled: false,
+    }),
     access_status: async () => gates.map((g) => ({ ...g })),
     full_disk_status: async () => "denied",
     request_access: async ({ id }) => settle(id, "granted"),
@@ -128,6 +140,27 @@ function browserStub() {
     open_privacy_settings: async () => {},
     set_seen_onboarding: async () => {},
     reveal: async () => {},
+    app_version: async () => "1.4.0-dev",
+    set_auto_update: async () => {},
+    update_check: async () =>
+      pretendBehind
+        ? { version: "9.9.9", current: "1.4.0-dev", notes: "A pretend release, for working on this card." }
+        : null,
+    update_install: async () => {
+      throw new Error("installing an update needs the desktop app");
+    },
+    support_prompt_status: async () => ({
+      show: !supportDisabled && Math.floor(Date.now() / 1000) >= nextSupportAt,
+      next_at: supportDisabled ? null : nextSupportAt,
+    }),
+    support_prompt_later: async () => {
+      nextSupportAt = Math.floor(Date.now() / 1000) + 86_400;
+      return { show: false, next_at: nextSupportAt };
+    },
+    support_prompt_never: async () => {
+      supportDisabled = true;
+    },
+    open_support_page: async () => {},
   };
 }
 
@@ -780,13 +813,31 @@ canvas.addEventListener("mousemove", (e) => {
   const node = state.nodes[index];
   const age = node.m ? Math.round((Date.now() / 1000 - node.m) / 86400) : null;
   tooltip.hidden = false;
-  tooltip.innerHTML =
-    `<div class="path">${pathOf(index)}</div>` +
-    `<div class="meta">${human(node.s)} · ${node.f.toLocaleString()} files` +
-    (age !== null ? ` · ${age}d old` : "") +
-    (node.r ? ` · <strong>${node.r}</strong> (${node.t})` : " · unclassified") +
-    `</div>` +
-    (node.g ? `<div class="regen">restore: ${node.g}</div>` : "");
+  const path = document.createElement("div");
+  path.className = "path";
+  path.textContent = pathOf(index);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.append(`${human(node.s)} · ${node.f.toLocaleString()} files`);
+  if (age !== null) meta.append(` · ${age}d old`);
+  if (node.r) {
+    meta.append(" · ");
+    const rule = document.createElement("strong");
+    rule.textContent = node.r;
+    meta.append(rule, ` (${node.t})`);
+  } else {
+    meta.append(" · unclassified");
+  }
+
+  const parts = [path, meta];
+  if (node.g) {
+    const regen = document.createElement("div");
+    regen.className = "regen";
+    regen.textContent = `restore: ${node.g}`;
+    parts.push(regen);
+  }
+  tooltip.replaceChildren(...parts);
   const pad = 16;
   tooltip.style.left = `${Math.min(e.clientX + pad, window.innerWidth - tooltip.offsetWidth - 8)}px`;
   tooltip.style.top = `${Math.min(e.clientY + pad, window.innerHeight - tooltip.offsetHeight - 8)}px`;
@@ -1005,12 +1056,19 @@ document.getElementById("delete").onclick = async () => {
     window.alert("Deletion is only available inside the desktop app.");
     return;
   }
-  const { invoke } = window.__TAURI__.core;
-  const result = await invoke("delete_targets", { targets });
-  window.alert(`Freed ${human(result.freed)} across ${result.removed} paths.`);
-  // Rescan the same root rather than reloading the page: a reload would drop
-  // back to $HOME and throw away whichever folder the user chose.
-  runScan(state.rootPath);
+  try {
+    const result = await call("delete_targets", { targets });
+    const skipped = result.skipped?.length
+      ? `\n\n${result.skipped.length} skipped:\n${result.skipped.join("\n")}`
+      : "";
+    window.alert(`Freed ${human(result.freed)} across ${result.removed} paths.${skipped}`);
+    // Rescan the same root rather than reloading the page: a reload would drop
+    // back to $HOME and throw away whichever folder the user chose.
+    await runScan(state.rootPath);
+  } catch (err) {
+    console.error(err);
+    window.alert(`Could not delete the selection: ${String(err)}`);
+  }
 };
 
 window.addEventListener("resize", resize);
@@ -1093,7 +1151,7 @@ async function runScan(path) {
     setStatus(null);
     showStep("scope");
     onboardError.hidden = false;
-    onboardError.textContent = err.message;
+    onboardError.textContent = String(err);
     console.error(err);
   } finally {
     scanning = false;
@@ -1108,6 +1166,203 @@ async function chooseFolder() {
   const { invoke } = window.__TAURI__.core;
   return invoke("pick_folder");
 }
+
+// ---------------------------------------------------------------------------
+// updates
+// ---------------------------------------------------------------------------
+//
+// The app checks on launch and then says nothing unless there is something to
+// say. It never installs on its own: this tool deletes files, and swapping the
+// binary that does that without being asked is not a thing to do quietly. So the
+// automatic half is the *looking*, and the deciding stays with the user.
+
+const updateCard = document.getElementById("update-card");
+const updateStatusEl = document.getElementById("update-status");
+const updateLook = document.getElementById("update-look");
+const updateAuto = document.getElementById("update-auto");
+const updateInstall = document.getElementById("update-install");
+
+// Guards the one action that must not be started twice. The Rust side keeps the
+// pending update available after a failed download so this button can retry.
+let installing = false;
+let updateProgressBound = false;
+
+function updateSays(text) {
+  updateStatusEl.hidden = text === null;
+  if (text !== null) updateStatusEl.textContent = text;
+}
+
+function showUpdate(info) {
+  document.getElementById("update-headline").textContent = `Version ${info.version} is out`;
+  document.getElementById("update-version").textContent = `you have ${info.current}`;
+  const notes = document.getElementById("update-notes");
+  const body = (info.notes ?? "").trim();
+  notes.hidden = !body;
+  notes.textContent = body;
+  updateCard.hidden = false;
+  updateSays(null);
+}
+
+/**
+ * @param manual true when the user pressed the button, which is the only case
+ *   that reports "you are up to date" or an error. A launch check that finds
+ *   nothing, or that cannot reach the network, says nothing at all — being
+ *   offline is not news, and neither is already being current.
+ */
+async function lookForUpdate(manual) {
+  if (manual) {
+    updateLook.disabled = true;
+    updateSays("checking…");
+  }
+  try {
+    const info = await call("update_check");
+    if (info) showUpdate(info);
+    else {
+      updateCard.hidden = true;
+      if (manual) updateSays("You have the newest version.");
+    }
+  } catch (err) {
+    console.error(err);
+    if (manual) updateSays(`Could not check: ${err}`);
+  } finally {
+    updateLook.disabled = false;
+  }
+}
+
+updateLook.onclick = () => lookForUpdate(true);
+
+document.getElementById("update-later").onclick = () => {
+  // For this session only. A build worth telling you about once is worth
+  // telling you about again next launch, and a setting to silence one specific
+  // version is a setting that has to be got right forever.
+  updateCard.hidden = true;
+};
+
+updateAuto.onchange = async () => {
+  try {
+    await call("set_auto_update", { on: updateAuto.checked });
+  } catch (err) {
+    console.error(err);
+    updateAuto.checked = !updateAuto.checked;
+    updateSays("Could not save that setting.");
+  }
+};
+
+updateInstall.onclick = async () => {
+  if (installing) return;
+  installing = true;
+  updateInstall.disabled = true;
+  updateInstall.textContent = "Downloading…";
+
+  try {
+    if (inTauri && !updateProgressBound) {
+      const { listen } = window.__TAURI__.event;
+      await listen("update-progress", ({ payload }) => {
+        // The manifest carries a length for both platforms, but a proxy that
+        // strips it would otherwise leave the button reading "NaN%".
+        updateInstall.textContent = payload.total
+          ? `Downloading ${Math.round((payload.downloaded / payload.total) * 100)}%`
+          : `Downloading ${human(payload.downloaded)}`;
+      });
+      updateProgressBound = true;
+    }
+    // On success this never returns: the app is replaced and restarted.
+    await call("update_install");
+  } catch (err) {
+    console.error(err);
+    installing = false;
+    updateInstall.disabled = false;
+    updateInstall.textContent = "Install and restart";
+    updateSays(`Update failed: ${err}`);
+  }
+};
+
+/** Version line, the switch, and — if the switch is on — the launch check. */
+async function initUpdates(config) {
+  updateAuto.checked = config.auto_update !== false;
+  try {
+    document.getElementById("app-version").textContent = `cachereaper ${await call("app_version")}`;
+  } catch (err) {
+    console.error(err);
+  }
+  if (updateAuto.checked) lookForUpdate(false);
+}
+
+// ---------------------------------------------------------------------------
+// support
+// ---------------------------------------------------------------------------
+
+const supportCard = document.getElementById("support-card");
+let supportTimer = null;
+
+function queueSupportCheck(nextAt) {
+  if (supportTimer !== null) clearTimeout(supportTimer);
+  supportTimer = null;
+  if (nextAt === null || nextAt === undefined) return;
+  const delay = Math.max(0, nextAt * 1000 - Date.now());
+  supportTimer = window.setTimeout(initSupport, Math.min(delay, 2_147_000_000));
+}
+
+async function initSupport() {
+  try {
+    const prompt = await call("support_prompt_status");
+    supportCard.hidden = !prompt.show;
+    queueSupportCheck(prompt.show ? null : prompt.next_at);
+  } catch (err) {
+    // A support prompt must never interfere with the disk tool itself.
+    console.error(err);
+    supportCard.hidden = true;
+  }
+}
+
+async function openSupport(destination) {
+  await call("open_support_page", { destination });
+}
+
+document.getElementById("support-open").onclick = () => {
+  openSupport("coffee").catch((err) => {
+    console.error(err);
+    setStatus(`could not open the support page: ${String(err)}`);
+  });
+};
+
+async function followSupportLink(destination) {
+  try {
+    await openSupport(destination);
+    // Clicking through acknowledges the card; the permanent footer link stays.
+    await call("support_prompt_never");
+    supportCard.hidden = true;
+    queueSupportCheck(null);
+  } catch (err) {
+    console.error(err);
+    setStatus(`could not open the support page: ${String(err)}`);
+  }
+}
+
+document.getElementById("support-coffee").onclick = () => followSupportLink("coffee");
+document.getElementById("support-github").onclick = () => followSupportLink("github");
+
+document.getElementById("support-later").onclick = async () => {
+  try {
+    const prompt = await call("support_prompt_later");
+    supportCard.hidden = true;
+    queueSupportCheck(prompt.next_at);
+  } catch (err) {
+    console.error(err);
+    setStatus(`could not save that choice: ${String(err)}`);
+  }
+};
+
+document.getElementById("support-never").onclick = async () => {
+  try {
+    await call("support_prompt_never");
+    supportCard.hidden = true;
+    queueSupportCheck(null);
+  } catch (err) {
+    console.error(err);
+    setStatus(`could not save that choice: ${String(err)}`);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // the journey
@@ -1373,6 +1628,10 @@ async function boot() {
   firstRun = !config.seen_onboarding;
   journey = config.seen_onboarding ? ["scope", "access"] : ["intro", "scope", "access"];
   showStep(journey[0]);
+  // Deliberately not awaited: the launch check is a network round trip, and the
+  // folder step should be on screen before it, not after it.
+  initUpdates(config);
+  initSupport();
 }
 
 if (inTauri) {
@@ -1389,6 +1648,13 @@ if (inTauri) {
   // ./gui/dev.sh is for working on the map, so it opens straight into one.
   // Add ?onboarding to the URL to work on the journey instead, against the
   // stubbed gates above.
-  if (new URLSearchParams(location.search).has("onboarding")) boot();
-  else runScan();
+  if (new URLSearchParams(location.search).has("onboarding")) {
+    boot();
+  } else {
+    runScan();
+    // The panel is on screen in this mode without boot() ever running, and the
+    // version line lives in the panel.
+    initUpdates({ auto_update: true });
+    initSupport();
+  }
 }
