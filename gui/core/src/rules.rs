@@ -166,9 +166,7 @@ impl ArtifactMatcher {
             if !rule.markers.is_empty() && !rule.markers.iter().any(|m| siblings.contains(m)) {
                 continue;
             }
-            if !rule.contains.is_empty()
-                && !rule.contains.iter().all(|c| path.join(c).exists())
-            {
+            if !rule.contains.is_empty() && !rule.contains.iter().all(|c| path.join(c).exists()) {
                 continue;
             }
             return Some(rule);
@@ -194,12 +192,22 @@ pub fn find_node(tree: &Tree, path: &Path) -> Option<u32> {
 }
 
 /// Expand a rule glob (only `*` is used, always as a whole component).
-fn expand_glob(base: &Path, pattern: &str) -> Vec<PathBuf> {
+fn is_user_excluded(tree: &Tree, path: &Path) -> bool {
+    tree.stats
+        .excluded_paths
+        .iter()
+        .any(|excluded| path == excluded || path.starts_with(excluded))
+}
+
+fn expand_glob(tree: &Tree, base: &Path, pattern: &str) -> Vec<PathBuf> {
     let mut current = vec![base.to_path_buf()];
     for part in pattern.split('/').filter(|p| !p.is_empty()) {
         let mut next = Vec::new();
         if part == "*" {
             for dir in &current {
+                if is_user_excluded(tree, dir) {
+                    continue;
+                }
                 if let Ok(entries) = std::fs::read_dir(dir) {
                     for entry in entries.flatten() {
                         next.push(entry.path());
@@ -244,7 +252,10 @@ pub fn static_findings(tree: &Tree, include_system: bool) -> Vec<Finding> {
             (home.clone(), rule.glob.as_str())
         };
 
-        for matched in expand_glob(&base, pattern) {
+        for matched in expand_glob(tree, &base, pattern) {
+            if is_user_excluded(tree, &matched) {
+                continue;
+            }
             let targets: Vec<PathBuf> = if rule.children {
                 match std::fs::read_dir(&matched) {
                     Ok(entries) => entries.flatten().map(|e| e.path()).collect(),
@@ -254,6 +265,9 @@ pub fn static_findings(tree: &Tree, include_system: bool) -> Vec<Finding> {
                 vec![matched]
             };
             for target in targets {
+                if is_user_excluded(tree, &target) {
+                    continue;
+                }
                 if claimed.contains(&target) {
                     continue;
                 }
@@ -284,9 +298,11 @@ pub fn static_findings(tree: &Tree, include_system: bool) -> Vec<Finding> {
 /// Keep only the paths git already ignores, batched one call per repository.
 /// Mirrors `filter_gitignored`: a path outside any repo is dropped, because
 /// nothing proves it is build output rather than source.
-pub fn filter_gitignored(paths: Vec<(u32, PathBuf, ArtifactRule)>) -> Vec<(u32, PathBuf, ArtifactRule)> {
+pub fn filter_gitignored(
+    paths: Vec<(u32, PathBuf, ArtifactRule)>,
+) -> Vec<(u32, PathBuf, ArtifactRule)> {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     let mut by_repo: HashMap<PathBuf, Vec<(u32, PathBuf, ArtifactRule)>> = HashMap::new();
     for (node, path, rule) in paths {
@@ -303,8 +319,7 @@ pub fn filter_gitignored(paths: Vec<(u32, PathBuf, ArtifactRule)>) -> Vec<(u32, 
             .collect::<Vec<_>>()
             .join("\n");
 
-        let Ok(mut child) = Command::new("git")
-            .args(["-C", &repo.to_string_lossy(), "check-ignore", "--stdin"])
+        let Ok(mut child) = git_check_ignore_command(&repo)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -331,6 +346,30 @@ pub fn filter_gitignored(paths: Vec<(u32, PathBuf, ArtifactRule)>) -> Vec<(u32, 
         }
     }
     kept
+}
+
+/// Build the Git probe used by the rule pass.
+///
+/// The desktop executable uses Windows' GUI subsystem, so it has no console for
+/// console children such as `git.exe` to inherit. Without `CREATE_NO_WINDOW`,
+/// Windows briefly creates a terminal for every repository checked during a
+/// scan. Redirecting stdio does not suppress that window; it must be disabled at
+/// process creation time.
+fn git_check_ignore_command(repo: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command.args(["-C", &repo.to_string_lossy(), "check-ignore", "--stdin"]);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // WinBase.h: CREATE_NO_WINDOW. Keep the literal local so the core crate
+        // does not need a Windows bindings dependency for one stable flag.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command
 }
 
 /// A path in the spelling git uses.
@@ -385,9 +424,22 @@ pub fn dedupe_nested(mut findings: Vec<Finding>) -> Vec<Finding> {
 /// Every finding in the tree: artifacts marked during the walk, plus static
 /// rule hits, deduped so nested matches do not double-count.
 pub fn all_findings(tree: &Tree, include_system: bool) -> Vec<Finding> {
+    all_findings_excluding(tree, include_system, &HashSet::new())
+}
+
+/// Rule exclusions affect classification only. The arena and its reclaimable
+/// totals stay intact, so excluded matches remain ordinary map content.
+pub fn all_findings_excluding(
+    tree: &Tree,
+    include_system: bool,
+    excluded_rules: &HashSet<String>,
+) -> Vec<Finding> {
     let mut findings = artifact_findings(tree);
     findings.extend(static_findings(tree, include_system));
     dedupe_nested(findings)
+        .into_iter()
+        .filter(|finding| !excluded_rules.contains(&finding.rule_id))
+        .collect()
 }
 
 /// Artifact hits recorded on the nodes during the walk, with the deferred
@@ -417,8 +469,8 @@ pub fn artifact_findings(tree: &Tree) -> Vec<Finding> {
     for idx in 1..tree.nodes.len() {
         let node = &tree.nodes[idx];
         let parent = node.parent as usize;
-        let hidden_ok = !node.name.starts_with('.')
-            || hidden_artifacts.contains(node.name.as_str());
+        let hidden_ok =
+            !node.name.starts_with('.') || hidden_artifacts.contains(node.name.as_str());
         let top_ok = node.depth != 1 || !skip_top.contains(node.name.as_str());
         eligible[idx] = eligible[parent] && !claimed[parent] && hidden_ok && top_ok;
     }
@@ -439,6 +491,9 @@ pub fn artifact_findings(tree: &Tree) -> Vec<Finding> {
             .collect();
 
         let path = tree.path_of(idx as u32);
+        if is_user_excluded(tree, &path) {
+            continue;
+        }
         let Some(rule) = matcher.match_dir(&node.name, &siblings, &path) else {
             continue;
         };
@@ -509,7 +564,10 @@ mod tests {
     fn ambiguous_directory_names_stay_gitignore_gated() {
         let by_name = rules().by_dir_name();
         for name in ["build", "dist", "out", "obj"] {
-            for rule in by_name.get(name).unwrap_or_else(|| panic!("{name} missing")) {
+            for rule in by_name
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} missing"))
+            {
                 assert!(rule.need_gitignored, "{name} must stay gated");
             }
         }
@@ -531,5 +589,60 @@ mod tests {
             matcher.match_dir("node_modules", &empty, path).is_some(),
             "node_modules is unambiguous"
         );
+    }
+
+    #[test]
+    fn excluded_artifact_keeps_tree_boundary_without_becoming_a_finding() {
+        let root = std::env::temp_dir().join(format!(
+            "cachereaper-rules-excluded-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let excluded = root.join("node_modules");
+        std::fs::create_dir_all(excluded.join("package")).unwrap();
+        std::fs::write(excluded.join("package/blob"), b"data").unwrap();
+        let tree = crate::scan::scan_with_options(
+            &root,
+            crate::scan::ScanOptions {
+                markers: marker_vocabulary(),
+                excluded_paths: vec![excluded.clone()],
+                ..crate::scan::ScanOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(tree.nodes.len(), 2);
+        assert!(all_findings(&tree, false).is_empty());
+        assert_eq!(tree.stats.excluded_paths, vec![excluded]);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn rule_exclusion_suppresses_finding_without_removing_tree_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "cachereaper-rules-suppressed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("node_modules/package")).unwrap();
+        std::fs::write(root.join("node_modules/package/blob"), vec![1u8; 8192]).unwrap();
+        let tree = crate::scan::scan_with_markers(
+            &root,
+            2,
+            marker_vocabulary(),
+            Vec::new(),
+            |_, _| {},
+        )
+        .unwrap();
+        assert!(tree.root().total_size > 0);
+        let excluded = ["node-modules".to_string()].into_iter().collect();
+        assert!(all_findings_excluding(&tree, false, &excluded).is_empty());
+        assert!(tree.root().total_size > 0);
+        std::fs::remove_dir_all(root).ok();
     }
 }

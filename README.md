@@ -116,6 +116,9 @@ start empty, so pressing `d` immediately does the conservative thing.
 | `--min-size 10M` | ignore anything smaller |
 | `--only` / `--exclude RULE...` | filter by rule id |
 | `--roots DIR...` | where to hunt for project artifacts (default `$HOME`) |
+| `--profile NAME_OR_ID` | use one saved root and its exclusions (cannot be combined with `--roots`) |
+| `--exclude-path PATH...` | additional directories not to traverse in this scan |
+| `--ignore-saved-exclusions` | ignore saved global/profile exclusions for a reproducible scan |
 | `--system` | also `/Library/Caches`, `/private/var/folders` (sudo to delete) |
 | `--json` | machine-readable output |
 
@@ -162,6 +165,28 @@ scan after an update asks once more.
 Colour carries one meaning: tiers stay saturated, anything unclaimed drains to
 grey so it recedes. Dragging a box across a `node_modules` means *that folder*,
 not *those 400 files*.
+
+### Scan accounting, profiles, and cancellation
+
+The Map is always sized by **reclaimable bytes**: the scanner’s conservative
+estimate of blocks that deleting a file can release. Scan Health separately
+shows **allocated-reference bytes** (`st_blocks`-style references), **logical
+bytes** (file lengths), and shared/snapshot bytes where the filesystem exposes
+them. Sparse files, cloud placeholders, hard links, APFS clones, and snapshots
+mean those values need not agree or fit neatly inside physical capacity. An
+impossible total is shown as a warning and is never silently clamped.
+
+Profiles save one absolute root plus profile-specific path and rule exclusions.
+Global exclusions apply everywhere. Path exclusions are empty visible
+boundaries that are never opened; rule exclusions leave their bytes on the map
+but suppress cleanup suggestions. Paths are normalized lexically without
+following symlinks. A running scan can be cancelled; all workers finish and the
+partial tree is discarded, leaving the previous result in place after a rescan.
+The optional fields in `~/.cachereaper/config.json` are
+`global_excluded_paths`, `global_excluded_rules`, `profiles` (each with stable
+`id`, unique `name`, absolute `root`, `excluded_paths`, and `excluded_rules`),
+and `last_profile_id`. Older configs migrate through defaults without rewriting
+the access or update preferences already stored there.
 
 ### Updates
 
@@ -227,12 +252,19 @@ claimed on its name alone:
    skipped, not deleted.
 5. **Stateful data is not a rule at all**: VM disks, chat history, `Downloads`,
    and source directories are never offered.
-6. **Everything is logged** to `~/.cachereaper/reap-<timestamp>.jsonl` with the
-   path, rule, bytes, and restore command.
+6. **Every real cleanup gets a durable receipt before deletion starts** in
+   `~/.cachereaper/receipt-<milliseconds>-<pid>-<counter>.jsonl`. It records each
+   removed or skipped target, the scanner estimate, and a separate signed,
+   best-effort system-wide free-space delta. Dry runs create no receipt.
 7. **High risk requires typing a phrase**, not just `y`.
 
 Where a vendor command is safer than `rm -rf` — Docker, Colima, rustup, simctl,
 Time Machine snapshots — `cachereaper tools` prints the command instead.
+
+Cleanup History is local, has no telemetry or network submission, and is kept
+until explicitly cleared. Receipts are an audit trail, not undo; deletion is
+still permanent. Older `reap-*.jsonl` logs remain readable as legacy receipts,
+and interrupted/truncated sessions are marked incomplete.
 
 ## Build and test
 
@@ -248,6 +280,7 @@ against.
 python3 -m unittest discover -s tests             # CLI
 cargo test --manifest-path gui/core/Cargo.toml    # scanner, guards, deletion
 node gui/tests/treemap.test.mjs                   # treemap layout
+node gui/tests/v16.test.mjs                       # findings, health, receipts, DOM contracts
 ```
 
 New rules are the most useful contribution. A rule needs an id, a tier, a label,

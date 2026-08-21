@@ -1,10 +1,17 @@
 # Releasing
 
+## 1.6.0 — Trust and Control
+
+Adds cancelable scans, explicit reclaimable/allocated/logical accounting,
+searchable Map/List findings, global and profile exclusions, reusable scan
+profiles, and durable local cleanup receipts with History. No telemetry,
+scheduled cleanup, vendor cleanup automation, or background deletion was added.
+
 Tag it and push. The rest is CI.
 
 ```bash
-git tag -a v1.5.0 -m "What changed, in a sentence or three."
-git push origin v1.5.0
+git tag -a v1.6.0 -m "What changed, in a sentence or three."
+git push origin v1.6.0
 ```
 
 The tag message is not decoration: it becomes the release note shown inside the

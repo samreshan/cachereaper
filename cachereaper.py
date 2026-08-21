@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 REPO = "samreshan/cachereaper"
 HOME = Path.home()
 LOG_DIR = HOME / ".cachereaper"
@@ -446,7 +446,24 @@ def on_disk_size(st) -> int:
     return blocks * 512 if blocks is not None else st.st_size
 
 
-def dir_stats(path: Path) -> tuple[int, float, int]:
+def _path_key(path: Path) -> str:
+    value = os.path.normpath(str(path))
+    return os.path.normcase(value) if os.name == "nt" else value
+
+
+def _is_excluded(path: Path, excluded_paths=()) -> bool:
+    candidate = _path_key(path)
+    for excluded in excluded_paths:
+        boundary = _path_key(Path(excluded))
+        try:
+            if os.path.commonpath([candidate, boundary]) == boundary:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def dir_stats(path: Path, excluded_paths=()) -> tuple[int, float, int]:
     """(bytes on disk, newest mtime, file count). Never follows symlinks."""
     total = 0
     newest = 0.0
@@ -461,6 +478,8 @@ def dir_stats(path: Path) -> tuple[int, float, int]:
     stack = [str(path)]
     while stack:
         d = stack.pop()
+        if _is_excluded(Path(d), excluded_paths):
+            continue
         try:
             it = os.scandir(d)
         except OSError:
@@ -508,7 +527,7 @@ class Candidate:
 # discovery: static rules
 # ---------------------------------------------------------------------------
 
-def discover_static(include_system: bool) -> list[Candidate]:
+def discover_static(include_system: bool, excluded_paths=()) -> list[Candidate]:
     found: dict[Path, Candidate] = {}
     for rule in STATIC_RULES:
         if not rule.applies_here():
@@ -536,6 +555,8 @@ def discover_static(include_system: bool) -> list[Candidate]:
             else:
                 targets = [match]
             for target in targets:
+                if _is_excluded(target, excluded_paths):
+                    continue
                 if not target.exists() and not target.is_symlink():
                     continue
                 if target in found:
@@ -625,7 +646,7 @@ def filter_gitignored(pending: list[tuple[Path, ArtifactRule]]) -> list[tuple[Pa
     return kept
 
 
-def discover_projects(roots: list[Path], max_depth: int, progress) -> list[Candidate]:
+def discover_projects(roots: list[Path], max_depth: int, progress, excluded_paths=()) -> list[Candidate]:
     out: list[Candidate] = []
     pending_git: list[tuple[Path, ArtifactRule]] = []
     seen_dirs = 0
@@ -640,6 +661,8 @@ def discover_projects(roots: list[Path], max_depth: int, progress) -> list[Candi
         stack: list[tuple[str, int]] = [(str(root), 0)]
         while stack:
             d, depth = stack.pop()
+            if _is_excluded(Path(d), excluded_paths):
+                continue
             seen_dirs += 1
             if progress and seen_dirs % 400 == 0:
                 progress(f"scanning… {seen_dirs} dirs")
@@ -656,6 +679,8 @@ def discover_projects(roots: list[Path], max_depth: int, progress) -> list[Candi
                     continue
                 name = entry.name
                 path = Path(entry.path)
+                if _is_excluded(path, excluded_paths):
+                    continue
                 if depth == 0 and name in SKIP_TOP_LEVEL:
                     continue
                 if path_is_protected(path):
@@ -709,13 +734,13 @@ def dedupe_nested(cands: list[Candidate]) -> list[Candidate]:
     return kept
 
 
-def measure(cands: list[Candidate], progress) -> None:
+def measure(cands: list[Candidate], progress, excluded_paths=()) -> None:
     done = 0
     total = len(cands)
 
     def work(cand: Candidate):
         nonlocal done
-        cand.size, cand.mtime, cand.files = dir_stats(cand.path)
+        cand.size, cand.mtime, cand.files = dir_stats(cand.path, excluded_paths)
         done += 1
         if progress and done % 25 == 0:
             progress(f"measuring… {done}/{total}")
@@ -1098,7 +1123,7 @@ def allowed_roots_for(args) -> list[Path]:
     """Deletion is confined to $HOME plus any roots the user explicitly scanned."""
     roots = [HOME]
     for r in (getattr(args, "roots", None) or []):
-        p = Path(r).expanduser().resolve()
+        p = _absolute_lexical(r)
         if p != Path("/") and len(p.parts) >= 2:
             roots.append(p)
     # geteuid is unix-only, and every --system rule is macOS-only anyway, so
@@ -1109,20 +1134,78 @@ def allowed_roots_for(args) -> list[Path]:
     return roots
 
 
+_RECEIPT_COUNTER = 0
+
+
+def _free_space(path: Path) -> int | None:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
+
+
 def delete(cands: list[Candidate], dry_run: bool, allowed: list[Path]) -> tuple[int, int, list[str]]:
+    global _RECEIPT_COUNTER
     freed = 0
     removed = 0
     errors: list[str] = []
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logfile = LOG_DIR / f"reap-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
-    # append, so two runs inside the same second do not clobber each other's log
-    log = None if dry_run else logfile.open("a")
+    receipt_skipped = 0
+    root = HOME
+    if cands:
+        containing = [path for path in allowed if is_within(cands[0].path, path)]
+        if containing:
+            root = max(containing, key=lambda path: len(path.parts))
+    log = None
+    logfile = None
+    free_before = None
+    receipt_id = None
+    if not dry_run:
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            stamp = int(time.time() * 1000)
+            receipt_id = f"{stamp}-{os.getpid()}-{_RECEIPT_COUNTER}"
+            _RECEIPT_COUNTER += 1
+            logfile = LOG_DIR / f"receipt-{receipt_id}.jsonl"
+            free_before = _free_space(root)
+            log = logfile.open("x", encoding="utf-8")
+            log.write(json.dumps({
+                "schema": 1, "kind": "header", "receipt_id": receipt_id,
+                "started_at": stamp, "root": str(root),
+                "estimated_bytes": sum(cand.size for cand in cands),
+                "free_before": free_before,
+            }) + "\n")
+            log.flush()
+            os.fsync(log.fileno())
+        except OSError as exc:
+            if log:
+                log.close()
+            return 0, 0, [f"deletion aborted: could not create receipt: {exc}"]
+
+    def audit(cand, status, reason=""):
+        if not log:
+            return
+        log.write(json.dumps({
+            "schema": 1, "kind": "item", "path": str(cand.path),
+            "rule": cand.rule_id, "tier": cand.tier, "label": cand.label,
+            "regen": cand.regen, "estimated_bytes": cand.size,
+            "status": status, "reason": reason,
+        }) + "\n")
+        log.flush()
+
+    complete = True
     try:
         for cand in cands:
             why = validate_for_delete(cand, allowed)
             if why:
+                receipt_skipped += 1
                 if why not in ("already gone",):
                     errors.append(f"skip {cand.path}: {why}")
+                try:
+                    audit(cand, "skipped", why)
+                except OSError as exc:
+                    errors.append(f"audit append failed; stopped: {exc}")
+                    complete = False
+                    break
                 continue
             if dry_run:
                 freed += cand.size
@@ -1135,17 +1218,40 @@ def delete(cands: list[Candidate], dry_run: bool, allowed: list[Path]) -> tuple[
                 else:
                     cand.path.unlink()
             except OSError as exc:
+                receipt_skipped += 1
                 errors.append(f"failed {cand.path}: {exc}")
+                try:
+                    audit(cand, "skipped", str(exc))
+                except OSError as audit_exc:
+                    errors.append(f"audit append failed; stopped: {audit_exc}")
+                    complete = False
+                    break
                 continue
             freed += cand.size
             removed += 1
-            log.write(json.dumps({
-                "ts": time.time(), "path": str(cand.path), "rule": cand.rule_id,
-                "tier": cand.tier, "bytes": cand.size, "regen": cand.regen,
-            }) + "\n")
+            try:
+                audit(cand, "removed")
+            except OSError as exc:
+                errors.append(f"audit append failed after deletion; stopped: {exc}")
+                complete = False
+                break
             print(f"  {GREEN('removed')}  {human(cand.size):>8}  {str(cand.path).replace(str(HOME), '~')}")
     finally:
         if log:
+            try:
+                free_after = _free_space(root)
+                log.write(json.dumps({
+                    "schema": 1, "kind": "summary", "finished_at": int(time.time() * 1000),
+                    "removed_count": removed, "skipped_count": receipt_skipped,
+                    "estimated_removed_bytes": freed, "free_after": free_after,
+                    "signed_free_space_change": (free_after - free_before)
+                    if free_after is not None and free_before is not None else None,
+                    "complete": complete,
+                }) + "\n")
+                log.flush()
+                os.fsync(log.fileno())
+            except OSError as exc:
+                errors.append(f"could not finish receipt: {exc}")
             log.close()
             print(DIM(f"\n  log: {logfile}"))
     return freed, removed, errors
@@ -1155,29 +1261,90 @@ def delete(cands: list[Candidate], dry_run: bool, allowed: list[Path]) -> tuple[
 # CLI
 # ---------------------------------------------------------------------------
 
+def load_saved_config() -> tuple[dict, str | None]:
+    path = LOG_DIR / "config.json"
+    if not path.exists():
+        return {}, None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("top level is not an object")
+        return value, None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {}, f"warning: ignoring malformed config {path}: {exc}"
+
+
+def _absolute_lexical(value: str | Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(str(value))))
+
+
+def apply_saved_scan_settings(args) -> None:
+    args.saved_excluded_paths = []
+    args.saved_excluded_rules = []
+    ignoring = getattr(args, "ignore_saved_exclusions", False)
+    if ignoring and not getattr(args, "profile", None):
+        return
+
+    config, warning = load_saved_config()
+    if warning:
+        print(warning, file=sys.stderr)
+    if not ignoring:
+        args.saved_excluded_paths.extend(
+            _absolute_lexical(path) for path in config.get("global_excluded_paths", [])
+            if isinstance(path, str)
+        )
+        args.saved_excluded_rules.extend(
+            rule for rule in config.get("global_excluded_rules", []) if isinstance(rule, str)
+        )
+
+    wanted = getattr(args, "profile", None)
+    if not wanted:
+        return
+    profiles = config.get("profiles", [])
+    profile = next((item for item in profiles if isinstance(item, dict) and
+                    (item.get("id") == wanted or
+                     str(item.get("name", "")).casefold() == wanted.casefold())), None)
+    if profile is None:
+        raise ValueError(f"profile not found: {wanted}")
+    root = profile.get("root")
+    if not isinstance(root, str) or not Path(root).is_absolute():
+        raise ValueError(f"profile {wanted!r} has an invalid root")
+    args.roots = [str(_absolute_lexical(root))]
+    if not ignoring:
+        args.saved_excluded_paths.extend(
+            _absolute_lexical(path) for path in profile.get("excluded_paths", [])
+            if isinstance(path, str)
+        )
+        args.saved_excluded_rules.extend(
+            rule for rule in profile.get("excluded_rules", []) if isinstance(rule, str)
+        )
+
 def collect(args) -> list[Candidate]:
     def progress(msg):
         if not args.json and sys.stderr.isatty():
             print(f"\r\033[K{DIM(msg)}", end="", file=sys.stderr, flush=True)
 
+    excluded_paths = list(getattr(args, "saved_excluded_paths", []))
+    excluded_paths += [_absolute_lexical(path) for path in (getattr(args, "exclude_path", None) or [])]
     cands: list[Candidate] = []
     if not args.no_static:
-        cands += discover_static(args.system)
+        cands += discover_static(args.system, excluded_paths)
     if not args.no_projects:
-        roots = [Path(r).expanduser().resolve() for r in args.roots] if args.roots else [HOME]
-        cands += discover_projects(roots, args.max_depth, progress)
+        roots = [_absolute_lexical(r) for r in args.roots] if args.roots else [HOME]
+        cands += discover_projects(roots, args.max_depth, progress, excluded_paths)
 
     cands = dedupe_nested(cands)
 
     if args.only:
         wanted = set(args.only)
         cands = [c_ for c_ in cands if c_.rule_id in wanted]
-    if args.exclude:
-        unwanted = set(args.exclude)
+    unwanted = set(getattr(args, "saved_excluded_rules", []))
+    unwanted.update(args.exclude or [])
+    if unwanted:
         cands = [c_ for c_ in cands if c_.rule_id not in unwanted]
     cands = [c_ for c_ in cands if TIER_RANK[c_.tier] <= TIER_RANK[args.tier]]
 
-    measure(cands, progress)
+    measure(cands, progress, excluded_paths)
     if sys.stderr.isatty() and not args.json:
         print("\r\033[K", end="", file=sys.stderr, flush=True)
 
@@ -1503,8 +1670,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="ignore items smaller than this, e.g. 10M (default 0)")
         p.add_argument("--only", nargs="+", metavar="RULE", help="only these rule ids")
         p.add_argument("--exclude", nargs="+", metavar="RULE", help="skip these rule ids")
-        p.add_argument("--roots", nargs="+", metavar="DIR",
-                       help="directories to scan for project artifacts (default: $HOME)")
+        scope = p.add_mutually_exclusive_group()
+        scope.add_argument("--roots", nargs="+", metavar="DIR",
+                           help="directories to scan for project artifacts (default: $HOME)")
+        scope.add_argument("--profile", metavar="NAME_OR_ID",
+                           help="scan the root and exclusions from a saved profile")
+        p.add_argument("--exclude-path", nargs="+", metavar="PATH",
+                       help="additional paths not to traverse for this scan")
+        p.add_argument("--ignore-saved-exclusions", action="store_true",
+                       help="ignore global saved exclusions for a reproducible scan")
         p.add_argument("--max-depth", type=int, default=10, help="project scan depth (default 10)")
         p.add_argument("--system", action="store_true",
                        help="also scan /Library/Caches and /private/var/folders (needs sudo to delete)")
@@ -1566,7 +1740,12 @@ def main(argv=None) -> int:
     if isinstance(getattr(args, "min_size", 0), str):
         args.min_size = parse_size(args.min_size)
     try:
+        if hasattr(args, "roots"):
+            apply_saved_scan_settings(args)
         return args.func(args)
+    except ValueError as exc:
+        print(f"cachereaper: {exc}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("\naborted")
         return 130

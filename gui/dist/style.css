@@ -254,6 +254,17 @@ main { display: flex; height: calc(100% - 46px); }
 
 #map-wrap { flex: 1; min-width: 0; position: relative; background: var(--sunken); }
 
+#list-wrap { flex: 1; min-width: 0; overflow: auto; padding: 18px; background: var(--sunken); }
+#list-controls { display: flex; gap: 8px; position: sticky; top: -18px; z-index: 2; padding: 12px 0; background: var(--sunken); }
+#finding-search { flex: 1; min-width: 180px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 6px 9px; }
+#finding-table { width: 100%; border-collapse: collapse; background: var(--bg); font-size: 12px; }
+#finding-table th, #finding-table td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+#finding-table th { position: sticky; top: 43px; background: var(--panel); z-index: 1; color: var(--text-dim); }
+#finding-table td.path { max-width: 440px; word-break: break-all; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+#finding-table details { margin-top: 5px; color: var(--text-dim); }
+#load-more { display: block; margin: 14px auto; }
+#list-status { color: var(--text-dim); text-align: center; }
+
 #map {
   position: absolute;
   inset: 0;
@@ -313,6 +324,22 @@ body.mode-select #mode-hint { display: block; }
 #total-line { color: var(--text-faint); font-size: 12px; margin-top: 2px; }
 
 #legend { display: none; } /* the tier headings below carry this now */
+
+#scan-health summary { cursor: pointer; font-weight: 650; }
+#health-body { font-size: 12px; line-height: 1.45; margin: 10px 0; }
+#health-body dl { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; margin: 0; }
+#health-body dt { color: var(--text-dim); }
+#health-body dd { margin: 0; font-variant-numeric: tabular-nums; }
+#health-body .health-warning { color: var(--medium); }
+#diagnostics-fallback { width: 100%; min-height: 130px; margin-top: 8px; }
+.utility-links { display: flex; gap: 6px; margin: 12px 0; }
+.utility-links button { flex: 1; font-size: 11px; }
+
+.overlay { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: rgba(0,0,0,.48); }
+.overlay[hidden] { display: none; }
+.overlay .sheet.wide { width: min(720px, calc(100vw - 40px)); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
+#profiles-body article, #history-body article { border-top: 1px solid var(--line); padding: 10px 0; }
+#history-body .receipt-items { max-height: 220px; overflow: auto; font-size: 11px; word-break: break-all; }
 
 .card {
   border: 1px solid var(--line);

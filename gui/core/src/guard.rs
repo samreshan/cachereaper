@@ -130,6 +130,8 @@ pub struct Target {
     /// the basename recorded at scan time; a mismatch means the tree moved under us
     pub expect_name: String,
     pub size: u64,
+    pub label: String,
+    pub regen: String,
 }
 
 /// Re-validates immediately before deletion. Mirrors `validate_for_delete`.
@@ -231,6 +233,8 @@ mod tests {
             tier: "medium".into(),
             expect_name: "node_modules".into(),
             size: 0,
+            label: String::new(),
+            regen: String::new(),
         };
         assert_eq!(
             validate_for_delete(&target, &[home]),
@@ -247,6 +251,8 @@ mod tests {
             tier: "medium".into(),
             expect_name: "node_modules".into(),
             size: 0,
+            label: String::new(),
+            regen: String::new(),
         };
         assert_eq!(
             validate_for_delete(&target, &[root]),

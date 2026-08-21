@@ -75,19 +75,40 @@ fn main() {
                         "t": hit.map(|h| h.tier.clone()),
                         "r": hit.map(|h| h.rule_id.clone()),
                         "g": hit.map(|h| h.regen.clone()),
+                        "x": n.state,
                     })
                 })
                 .collect();
             let doc = serde_json::json!({
                 "root_path": tree.root_path.to_string_lossy(),
+                "home_path": cachereaper_core::guard::home().to_string_lossy(),
                 "stats": {
                     "dirs": tree.stats.dirs,
                     "files": tree.stats.files,
                     "bytes": tree.stats.bytes,
                     "unreadable": tree.stats.unreadable,
                     "elapsed_ms": tree.stats.elapsed_ms,
+                    "reclaimable_bytes": tree.stats.reclaimable_bytes,
+                    "allocated_reference_bytes": tree.stats.allocated_reference_bytes,
+                    "logical_bytes": tree.stats.logical_bytes,
+                    "shared_or_snapshot_bytes": tree.stats.shared_or_snapshot_bytes,
+                    "excluded": tree.stats.excluded,
+                    "unreadable_paths": tree.stats.unreadable_paths,
+                    "excluded_paths": tree.stats.excluded_paths,
+                    "volume_capacity": null,
+                    "volume_free": null,
                 },
-                "findings": findings.len(),
+                "findings": findings.iter().map(|finding| serde_json::json!({
+                    "node_id": finding.node,
+                    "rule_id": finding.rule_id,
+                    "tier": finding.tier,
+                    "label": finding.label,
+                    "regen": finding.regen,
+                    "warning": finding.warn,
+                    "source": finding.source,
+                    "reclaimable_size": finding.size,
+                    "path": finding.path.to_string_lossy(),
+                })).collect::<Vec<_>>(),
                 "nodes": nodes,
             });
             let text = serde_json::to_string(&doc).unwrap();

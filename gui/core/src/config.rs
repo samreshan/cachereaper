@@ -12,6 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +39,21 @@ pub struct Config {
     /// Permanent opt-out for the occasional support card. The support link in
     /// the footer remains available without prompting.
     pub support_prompt_disabled: bool,
+    pub global_excluded_paths: Vec<PathBuf>,
+    pub global_excluded_rules: Vec<String>,
+    pub profiles: Vec<ScanProfile>,
+    pub last_profile_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScanProfile {
+    pub id: String,
+    pub name: String,
+    pub root: PathBuf,
+    #[serde(default)]
+    pub excluded_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub excluded_rules: Vec<String>,
 }
 
 /// Not derived: `auto_update` has to default to `true`, and the container-level
@@ -53,6 +69,10 @@ impl Default for Config {
             auto_update: true,
             support_prompt_at: None,
             support_prompt_disabled: false,
+            global_excluded_paths: Vec::new(),
+            global_excluded_rules: Vec::new(),
+            profiles: Vec::new(),
+            last_profile_id: None,
         }
     }
 }
@@ -67,6 +87,161 @@ impl Config {
     /// user handed back still shows up as something we have talked about.
     pub fn record(&mut self, id: &str, state: AccessState) {
         self.access.insert(id.to_string(), state);
+    }
+
+    pub fn profile(&self, id_or_name: &str) -> Option<&ScanProfile> {
+        self.profiles.iter().find(|profile| {
+            profile.id == id_or_name || profile.name.eq_ignore_ascii_case(id_or_name)
+        })
+    }
+
+    pub fn create_profile(&mut self, name: String, root: PathBuf) -> Result<ScanProfile, String> {
+        validate_profile_name(self, &name, None)?;
+        let root = normalize_absolute(&root)?;
+        let profile = ScanProfile {
+            id: profile_id(),
+            name: name.trim().to_string(),
+            root,
+            excluded_paths: Vec::new(),
+            excluded_rules: Vec::new(),
+        };
+        self.last_profile_id = Some(profile.id.clone());
+        self.profiles.push(profile.clone());
+        Ok(profile)
+    }
+
+    pub fn update_profile(
+        &mut self,
+        id: &str,
+        name: String,
+        root: PathBuf,
+    ) -> Result<ScanProfile, String> {
+        validate_profile_name(self, &name, Some(id))?;
+        let root = normalize_absolute(&root)?;
+        let index = self
+            .profiles
+            .iter()
+            .position(|profile| profile.id == id)
+            .ok_or_else(|| "profile not found".to_string())?;
+        if self.profiles[index]
+            .excluded_paths
+            .iter()
+            .any(|path| !is_descendant(path, &root))
+        {
+            return Err("existing profile exclusions are outside the new root".to_string());
+        }
+        self.profiles[index].name = name.trim().to_string();
+        self.profiles[index].root = root;
+        Ok(self.profiles[index].clone())
+    }
+
+    pub fn delete_profile(&mut self, id: &str) -> bool {
+        let before = self.profiles.len();
+        self.profiles.retain(|profile| profile.id != id);
+        if self.last_profile_id.as_deref() == Some(id) {
+            self.last_profile_id = None;
+        }
+        before != self.profiles.len()
+    }
+
+    pub fn add_global_path(&mut self, path: PathBuf) -> Result<PathBuf, String> {
+        let path = normalize_absolute(&path)?;
+        push_unique_path(&mut self.global_excluded_paths, path.clone());
+        Ok(path)
+    }
+
+    pub fn add_profile_path(&mut self, id: &str, path: PathBuf) -> Result<PathBuf, String> {
+        let path = normalize_absolute(&path)?;
+        let profile = self
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.id == id)
+            .ok_or_else(|| "profile not found".to_string())?;
+        if !is_descendant(&path, &profile.root) {
+            return Err("profile exclusion must be below the profile root".to_string());
+        }
+        push_unique_path(&mut profile.excluded_paths, path.clone());
+        Ok(path)
+    }
+}
+
+static PROFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn profile_id() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let counter = PROFILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("profile-{millis}-{}-{counter}", std::process::id())
+}
+
+fn validate_profile_name(config: &Config, name: &str, except: Option<&str>) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("profile name cannot be empty".to_string());
+    }
+    if config.profiles.iter().any(|profile| {
+        Some(profile.id.as_str()) != except && profile.name.eq_ignore_ascii_case(name)
+    }) {
+        return Err("profile name already exists".to_string());
+    }
+    Ok(())
+}
+
+/// Normalize `.` and `..` without touching the filesystem or resolving links.
+pub fn normalize_absolute(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("path must be absolute".to_string());
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        use std::path::Component;
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if normalized.file_name().is_some() {
+                    normalized.pop();
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Ok(normalized)
+}
+
+fn comparable(path: &Path) -> String {
+    let value = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        value.to_lowercase()
+    } else {
+        value
+    }
+}
+
+pub fn paths_equal(left: &Path, right: &Path) -> bool {
+    comparable(left) == comparable(right)
+}
+
+pub fn is_descendant(path: &Path, root: &Path) -> bool {
+    let path = comparable(path);
+    let mut root = comparable(root);
+    let separator = std::path::MAIN_SEPARATOR;
+    if !root.ends_with(separator) {
+        root.push(separator);
+    }
+    path.starts_with(&root)
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    let candidate = comparable(&path);
+    if !paths
+        .iter()
+        .any(|existing| comparable(existing) == candidate)
+    {
+        paths.push(path);
     }
 }
 
@@ -217,6 +392,36 @@ mod tests {
         assert_eq!(read.state_of("downloads"), AccessState::Unknown);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn profiles_validate_and_keep_stable_ids_when_renamed() {
+        let dir = fixture();
+        let root = dir.join("work");
+        let mut config = Config::default();
+        let created = config.create_profile("Work".into(), root.clone()).unwrap();
+        config
+            .add_profile_path(&created.id, root.join("tmp/../cache"))
+            .unwrap();
+        let updated = config
+            .update_profile(&created.id, "Projects".into(), root.clone())
+            .unwrap();
+        assert_eq!(created.id, updated.id);
+        assert_eq!(updated.excluded_paths, vec![root.join("cache")]);
+        assert!(config
+            .create_profile("projects".into(), root.clone())
+            .is_err());
+        assert!(config
+            .add_profile_path(&created.id, dir.join("outside"))
+            .is_err());
+        assert!(config.add_profile_path(&created.id, root).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lexical_normalization_cannot_walk_above_root() {
+        assert_eq!(normalize_absolute(Path::new("/../../tmp/./cache")).unwrap(), Path::new("/tmp/cache"));
     }
 
     #[test]

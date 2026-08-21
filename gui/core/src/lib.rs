@@ -7,16 +7,24 @@
 pub mod access;
 pub mod config;
 pub mod guard;
+pub mod history;
 pub mod purge;
 pub mod rules;
 pub mod scan;
 
 pub use access::{AccessState, Gate, SettingsPane};
-pub use config::Config;
+pub use config::{Config, ScanProfile};
 pub use guard::{path_is_protected, validate_for_delete, Target};
+pub use history::{
+    clear_history, delete_receipt, read_history, Receipt, ReceiptItem, ReceiptSummary,
+};
 pub use purge::{allowed_roots, purge, PurgeResult};
-pub use rules::{all_findings, marker_vocabulary, Finding};
-pub use scan::{default_threads, scan_with_markers, scan, scan_with_progress, Node, ScanStats, Tree, NONE};
+pub use rules::{all_findings, all_findings_excluding, marker_vocabulary, Finding};
+pub use scan::{
+    default_threads, scan, scan_with_markers, scan_with_options, scan_with_options_progress,
+    scan_with_progress, CancellationToken, Node, NodeState, ScanError, ScanOptions, ScanStats,
+    Tree, NONE,
+};
 
 /// Human-readable byte sizes, matching the CLI's `human()` formatting.
 pub fn human(bytes: u64) -> String {

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cachereaper"
-version = "1.5.0"
+version = "1.6.0"
 description = "Risk-tiered cache and build-artifact reclaimer with an interactive picker"
 readme = "README.md"
 requires-python = ">=3.9"

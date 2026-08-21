@@ -8,6 +8,11 @@
 // without building the desktop shell.
 
 import { squarify, human } from "./treemap.js";
+import { ageDays, filterSortFindings, visibleBatch } from "./findings.js";
+import { diagnostics, healthWarnings } from "./health.js";
+import { receiptPresentation } from "./receipts.js";
+import { cancelViewState, isCurrentScanEvent } from "./lifecycle.js";
+import { exclusionSections } from "./profiles.js";
 
 // Bigger minimum than feels necessary, on purpose. At 5px the map rendered
 // ~15,000 cells and read as speckle; at 10 it renders a few thousand legible
@@ -39,6 +44,11 @@ const state = {
   mode: "explore", // explore | select
   hover: -1,
   drag: null,
+  findings: [],
+  payload: null,
+  activeProfileId: null,
+  view: "map",
+  listPages: 1,
 };
 
 // Timestamp rather than a boolean: a drag is normally followed by a click, but
@@ -72,20 +82,22 @@ const inTauri = typeof window !== "undefined" && !!window.__TAURI__;
 // Bound once rather than per scan: `listen` registers a new handler each call,
 // so re-binding on every rescan would multiply the progress messages.
 let progressBound = false;
+let activeScanId = null;
 
-async function load(path) {
+async function load(request) {
   if (inTauri) {
     const { invoke } = window.__TAURI__.core;
     if (!progressBound) {
       const { listen } = window.__TAURI__.event;
       await listen("scan-progress", (e) => {
-        const { files, bytes } = e.payload;
-        setStatus(`scanning… ${files.toLocaleString()} files, ${human(bytes)}`);
-        setScanProgress(files, bytes);
+        const { scan_id, files, reclaimable_bytes } = e.payload;
+        if (!isCurrentScanEvent(activeScanId, e.payload)) return;
+        setStatus(`scanning… ${files.toLocaleString()} files, ${human(reclaimable_bytes)}`);
+        setScanProgress(files, reclaimable_bytes);
       });
       progressBound = true;
     }
-    return invoke("scan_home", { path: path ?? null });
+    return invoke("scan_request", { request });
   }
   const res = await fetch("snapshot.json");
   if (!res.ok) {
@@ -125,6 +137,7 @@ function browserStub() {
   const pretendSupport = new URLSearchParams(location.search).has("support");
   let nextSupportAt = pretendSupport ? 0 : Math.floor(Date.now() / 1000) + 86_400;
   let supportDisabled = false;
+  const profiles = [];
   return {
     config_get: async () => ({
       seen_onboarding: false,
@@ -132,6 +145,10 @@ function browserStub() {
       auto_update: true,
       support_prompt_at: null,
       support_prompt_disabled: false,
+      global_excluded_paths: [],
+      global_excluded_rules: [],
+      profiles: profiles.map((profile) => ({ ...profile })),
+      last_profile_id: null,
     }),
     access_status: async () => gates.map((g) => ({ ...g })),
     full_disk_status: async () => "denied",
@@ -140,11 +157,11 @@ function browserStub() {
     open_privacy_settings: async () => {},
     set_seen_onboarding: async () => {},
     reveal: async () => {},
-    app_version: async () => "1.4.0-dev",
+    app_version: async () => "1.6.0-dev",
     set_auto_update: async () => {},
     update_check: async () =>
       pretendBehind
-        ? { version: "9.9.9", current: "1.4.0-dev", notes: "A pretend release, for working on this card." }
+        ? { version: "9.9.9", current: "1.6.0-dev", notes: "A pretend release, for working on this card." }
         : null,
     update_install: async () => {
       throw new Error("installing an update needs the desktop app");
@@ -161,6 +178,19 @@ function browserStub() {
       supportDisabled = true;
     },
     open_support_page: async () => {},
+    profile_list: async () => [],
+    rule_ids: async () => [],
+    profile_create: async ({ name, root }) => {
+      const profile = { id: `browser-${Date.now()}`, name, root, excluded_paths: [], excluded_rules: [] };
+      profiles.push(profile); return { ...profile };
+    },
+    profile_update: async ({ id, name, root }) => {
+      const profile = profiles.find((value) => value.id === id); Object.assign(profile, { name, root }); return { ...profile };
+    },
+    profile_delete: async ({ id }) => { const index = profiles.findIndex((value) => value.id === id); if (index >= 0) profiles.splice(index, 1); return index >= 0; },
+    history_list: async () => [],
+    history_clear: async () => 0,
+    cancel_scan: async () => true,
   };
 }
 
@@ -728,12 +758,113 @@ function renderSelection() {
   }
 }
 
+function renderList() {
+  const query = document.getElementById("finding-search").value;
+  const tier = document.getElementById("tier-filter").value;
+  const sort = document.getElementById("finding-sort").value;
+  const filtered = filterSortFindings(state.findings, {
+    query,
+    tiers: tier === "all" ? ["low", "medium", "high"] : [tier],
+    sort,
+    direction: sort === "size" || sort === "age" ? "desc" : "asc",
+  });
+  const shown = visibleBatch(filtered, state.listPages);
+  const body = document.querySelector("#finding-table tbody");
+  body.innerHTML = "";
+  for (const finding of shown) {
+    const tr = document.createElement("tr");
+    const checked = state.selected.has(finding.node_id);
+    tr.innerHTML = `<td><input type="checkbox" ${checked ? "checked" : ""} aria-label="Select ${finding.rule_id}"></td>
+      <td class="mono">${human(finding.reclaimable_size)}</td><td>${finding.tier}</td>
+      <td>${ageDays(finding.mtime).toFixed(0)}d</td><td>${finding.rule_id}</td>
+      <td class="path"></td>`;
+    tr.querySelector("td.path").textContent = finding.path;
+    const details = document.createElement("details");
+    details.innerHTML = `<summary>Why matched / how to restore</summary><p></p>`;
+    details.querySelector("p").textContent = `${finding.label}. ${finding.regen || "No regeneration guidance."}${finding.warning ? ` Warning: ${finding.warning}` : ""}`;
+    tr.querySelector("td.path").append(details);
+    tr.querySelector("input").onchange = () => {
+      toggleSelection(finding.node_id);
+      render();
+    };
+    body.append(tr);
+  }
+  const more = document.getElementById("load-more");
+  more.hidden = shown.length >= filtered.length;
+  document.getElementById("list-status").textContent = `${shown.length.toLocaleString()} of ${filtered.length.toLocaleString()} findings`;
+}
+
+function renderHealth() {
+  if (!state.payload) return;
+  const stats = state.payload.stats || {};
+  const boundaries = [...(stats.unreadable_paths || []), ...(stats.excluded_paths || [])];
+  const body = document.getElementById("health-body");
+  body.innerHTML = `<dl>
+    <dt>Reclaimable</dt><dd>${human(stats.reclaimable_bytes ?? stats.bytes ?? 0)}</dd>
+    <dt>Allocated references</dt><dd>${human(stats.allocated_reference_bytes ?? 0)}</dd>
+    <dt>Logical size</dt><dd>${human(stats.logical_bytes ?? 0)}</dd>
+    <dt>Shared / snapshot</dt><dd>${human(stats.shared_or_snapshot_bytes ?? 0)}</dd>
+    <dt>Volume capacity / free</dt><dd>${stats.volume_capacity == null ? "unavailable" : `${human(stats.volume_capacity)} / ${human(stats.volume_free)}`}</dd>
+    <dt>Files / directories</dt><dd>${(stats.files || 0).toLocaleString()} / ${(stats.dirs || 0).toLocaleString()}</dd>
+    <dt>User-excluded / unreadable</dt><dd>${stats.excluded || 0} / ${stats.unreadable || 0}</dd>
+    <dt>Duration</dt><dd>${((stats.elapsed_ms || 0) / 1000).toFixed(1)}s</dd></dl>`;
+  const meta = document.createElement("p");
+  meta.textContent = `Root: ${state.rootPath} · Platform: ${navigator.platform} · ${document.getElementById("app-version").textContent}`;
+  body.append(meta);
+  for (const warning of healthWarnings(stats)) {
+    const p = document.createElement("p"); p.className = "health-warning"; p.textContent = warning; body.append(p);
+  }
+  if (boundaries.length) {
+    const list = document.createElement("ul");
+    for (const path of boundaries.slice(0, 20)) { const li = document.createElement("li"); li.textContent = path; list.append(li); }
+    if (boundaries.length > 20) { const li = document.createElement("li"); li.textContent = `and ${boundaries.length - 20} more`; list.append(li); }
+    body.append(list);
+  }
+}
+
 function render() {
   renderChrome();
   renderFindings();
   renderSelection();
-  draw();
+  renderList();
+  renderHealth();
+  if (state.view === "map") draw();
 }
+
+for (const button of document.querySelectorAll("#view-mode button")) {
+  button.onclick = () => {
+    state.view = button.dataset.view;
+    document.getElementById("map-wrap").hidden = state.view !== "map";
+    document.getElementById("list-wrap").hidden = state.view !== "list";
+    for (const peer of document.querySelectorAll("#view-mode button")) {
+      const on = peer === button; peer.classList.toggle("on", on); peer.setAttribute("aria-selected", String(on));
+    }
+    if (state.view === "map") resize();
+    render();
+  };
+}
+for (const id of ["finding-search", "tier-filter", "finding-sort"]) {
+  document.getElementById(id).addEventListener(id === "finding-search" ? "input" : "change", () => {
+    state.listPages = 1; renderList();
+  });
+}
+document.getElementById("load-more").onclick = () => { state.listPages += 1; renderList(); };
+
+document.getElementById("copy-diagnostics").onclick = async () => {
+  const report = diagnostics(state.payload || {}, {
+    home: state.payload?.home_path || "",
+    platform: navigator.platform,
+    version: document.getElementById("app-version").textContent.replace("cachereaper ", ""),
+  });
+  try {
+    await navigator.clipboard.writeText(report);
+    setStatus("Diagnostics copied — nothing was sent");
+  } catch (_) {
+    const fallback = document.getElementById("diagnostics-fallback");
+    fallback.hidden = false; fallback.value = report; fallback.select();
+    setStatus("Select and copy the diagnostics below");
+  }
+};
 
 // ---------------------------------------------------------------------------
 // interaction
@@ -914,10 +1045,17 @@ function closeMenu() {
   menuEl.dataset.path = "";
 }
 
-function openMenu(x, y, path) {
+function openMenu(x, y, path, index) {
   menuEl.dataset.path = path;
+  menuEl.dataset.node = String(index);
   menuEl.querySelector(".path").textContent = path;
   menuEl.hidden = false;
+  for (const action of ["exclude-profile", "exclude-rule-profile"]) {
+    menuEl.querySelector(`[data-action="${action}"]`).hidden = !state.activeProfileId;
+  }
+  const hasRule = !!ruleOf(index);
+  menuEl.querySelector('[data-action="exclude-rule-global"]').hidden = !hasRule;
+  menuEl.querySelector('[data-action="exclude-rule-profile"]').hidden = !hasRule || !state.activeProfileId;
   // Measure after unhiding, then keep it inside the window: a right-click near
   // the bottom edge is exactly where a menu wants to hang off the screen.
   const pad = 8;
@@ -936,7 +1074,7 @@ canvas.addEventListener("contextmenu", (e) => {
     return;
   }
   tooltip.hidden = true;
-  openMenu(e.clientX, e.clientY, pathOf(cell.index));
+  openMenu(e.clientX, e.clientY, pathOf(cell.index), cell.index);
 });
 
 menuEl.querySelector('[data-action="reveal"]').onclick = () => {
@@ -944,6 +1082,25 @@ menuEl.querySelector('[data-action="reveal"]').onclick = () => {
   closeMenu();
   if (path) revealPath(path);
 };
+
+async function applyContextExclusion(action) {
+  const path = menuEl.dataset.path;
+  const node = Number(menuEl.dataset.node);
+  const profile = action.endsWith("profile") ? state.activeProfileId : null;
+  const ruleAction = action.includes("rule");
+  const subject = ruleAction ? ruleOf(node) : path;
+  if (!subject || !window.confirm(`Exclude ${subject}${profile ? " from this profile" : " globally"} and rescan?`)) return;
+  closeMenu();
+  try {
+    if (ruleAction) await call("exclusion_add_rule", { ruleId: subject, profileId: profile });
+    else await call("exclusion_add_path", { path: subject, profileId: profile });
+    await refreshProfiles();
+    runScan(state.rootPath);
+  } catch (error) { window.alert(`Could not save exclusion: ${error}`); }
+}
+for (const action of ["exclude-global", "exclude-profile", "exclude-rule-global", "exclude-rule-profile"]) {
+  menuEl.querySelector(`[data-action="${action}"]`).onclick = () => applyContextExclusion(action);
+}
 
 window.addEventListener("mousedown", (e) => {
   if (!menuEl.hidden && !menuEl.contains(e.target)) closeMenu();
@@ -1035,6 +1192,8 @@ document.getElementById("delete").onclick = async () => {
     tier: state.nodes[i].t || null,
     expect_name: nameOf(i),
     size: sizeOf(i),
+    label: state.findings.find((finding) => finding.node_id === i)?.label || "",
+    regen: state.findings.find((finding) => finding.node_id === i)?.regen || state.nodes[i].g || "",
   }));
 
   // Anything the rules did not claim is treated as seriously as a high-risk
@@ -1088,12 +1247,23 @@ function applyPayload(data) {
   state.nodes = data.nodes;
   state.rootPath = data.root_path;
   state.stats = data.stats;
+  state.payload = data;
+  state.findings = Array.isArray(data.findings)
+    ? data.findings.map((finding) => ({ ...finding, mtime: data.nodes[finding.node_id]?.m || 0 }))
+    : data.nodes.flatMap((node, node_id) => node.r ? [{
+        node_id, rule_id: node.r, tier: node.t, label: node.r, regen: node.g || "",
+        warning: "", source: "snapshot", reclaimable_size: node.s,
+        path: "", mtime: node.m,
+      }] : []);
+  for (const finding of state.findings) {
+    if (!finding.path) finding.path = pathOf(finding.node_id);
+  }
   state.current = 0;
   state.selected.clear();
   state.hover = -1;
   state.drag = null;
 
-  document.getElementById("total").textContent = human(data.stats.bytes);
+  document.getElementById("total").textContent = human(data.stats.reclaimable_bytes ?? data.stats.bytes);
 
   // Two unrelated denials produce this number — a folder the user refused, and
   // the ~/Library directories that have no dialog at all — and the difference
@@ -1133,32 +1303,59 @@ const scanningEl = document.getElementById("scanning");
 
 async function runScan(path) {
   if (scanning) return;
+  const hadTree = state.nodes.length > 0;
   scanning = true;
+  activeScanId = typeof crypto?.randomUUID === "function"
+    ? crypto.randomUUID() : `scan-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   document.body.classList.add("busy");
   onboardError.hidden = true;
 
   document.getElementById("scan-path").textContent = path || "your home folder";
   document.getElementById("scan-counts").textContent = "counting…";
   scanningEl.hidden = false;
+  const cancel = document.getElementById("cancel-scan");
+  Object.assign(cancel, { disabled: cancelViewState(false).disabled, textContent: cancelViewState(false).label });
 
   setStatus("scanning…");
   try {
-    applyPayload(await load(path));
+    const request = {
+      scan_id: activeScanId,
+      root: state.activeProfileId ? null : (path || state.rootPath || null),
+      profile_id: state.activeProfileId,
+      excluded_paths: [],
+      excluded_rules: [],
+    };
+    applyPayload(await load(request));
     onboarding.hidden = true;
   } catch (err) {
+    const cancelled = String(err).toLocaleLowerCase().includes("cancelled");
+    if (cancelled && hadTree) {
+      setStatus("Scan cancelled — previous results kept");
+      return;
+    }
     // Come back to the journey if we never got a tree: an empty map with the
     // sheet gone is a dead end.
     setStatus(null);
     showStep("scope");
     onboardError.hidden = false;
-    onboardError.textContent = String(err);
+    onboardError.textContent = cancelled ? "Scan cancelled" : String(err);
     console.error(err);
   } finally {
     scanning = false;
+    activeScanId = null;
     scanningEl.hidden = true;
     document.body.classList.remove("busy");
   }
 }
+
+document.getElementById("cancel-scan").onclick = async () => {
+  if (!activeScanId) return;
+  const button = document.getElementById("cancel-scan");
+  const view = cancelViewState(true);
+  button.textContent = view.label;
+  button.disabled = view.disabled;
+  try { await call("cancel_scan", { scanId: activeScanId }); } catch (error) { console.error(error); }
+};
 
 /** Native folder chooser. Resolves to null when the user cancels. */
 async function chooseFolder() {
@@ -1282,6 +1479,7 @@ async function initUpdates(config) {
   updateAuto.checked = config.auto_update !== false;
   try {
     document.getElementById("app-version").textContent = `cachereaper ${await call("app_version")}`;
+    renderHealth();
   } catch (err) {
     console.error(err);
   }
@@ -1416,6 +1614,7 @@ document.querySelector('[data-go="scope"]').onclick = () => showStep("scope");
 
 document.getElementById("scope-home").onclick = () => {
   chosenRoot = null;
+  state.activeProfileId = null;
   offerAccess();
 };
 
@@ -1423,6 +1622,7 @@ document.getElementById("scope-choose").onclick = async () => {
   const picked = await chooseFolder();
   if (picked) {
     chosenRoot = picked;
+    state.activeProfileId = null;
     offerAccess();
   }
 };
@@ -1610,10 +1810,124 @@ async function startScan() {
   runScan(chosenRoot ?? undefined);
 }
 
+let appConfig = null;
+
+async function refreshProfiles() {
+  try { appConfig = await call("config_get"); } catch (error) { console.error(error); return; }
+  const select = document.getElementById("profile-selector");
+  select.innerHTML = '<option value="">Profiles…</option>';
+  for (const profile of appConfig.profiles || []) {
+    const option = document.createElement("option"); option.value = profile.id; option.textContent = profile.name; select.append(option);
+  }
+  select.value = state.activeProfileId || "";
+}
+
+document.getElementById("profile-selector").onchange = async (event) => {
+  if (!event.target.value) return;
+  state.activeProfileId = event.target.value;
+  await runScan();
+};
+
+document.getElementById("save-profile").onclick = async () => {
+  if (!state.rootPath) return;
+  const name = window.prompt("Profile name");
+  if (!name) return;
+  try {
+    const profile = await call("profile_create", { name, root: state.rootPath });
+    state.activeProfileId = profile.id;
+    await refreshProfiles();
+  } catch (error) { window.alert(`Could not save profile: ${error}`); }
+};
+
+async function renderProfilesSheet() {
+  await refreshProfiles();
+  const body = document.getElementById("profiles-body"); body.innerHTML = "";
+  let knownRules = new Set(state.findings.map((finding) => finding.rule_id));
+  try { knownRules = new Set(await call("rule_ids")); } catch (_) { /* snapshot findings are the fallback */ }
+  const section = (title, paths, rules, profileId = null) => {
+    const article = document.createElement("article");
+    const heading = document.createElement("h2"); heading.textContent = title; article.append(heading);
+    for (const path of paths || []) {
+      const row = document.createElement("p"); row.textContent = path;
+      const remove = document.createElement("button"); remove.textContent = "Remove"; remove.className = "ghost";
+      remove.onclick = async () => {
+        if (!window.confirm(`Remove exclusion ${path} and rescan?`)) return;
+        await call("exclusion_remove_path", { path, profileId });
+        await renderProfilesSheet(); runScan(state.rootPath);
+      };
+      row.append(" ", remove); article.append(row);
+    }
+    for (const rule of rules || []) {
+      const row = document.createElement("p"); row.textContent = `${rule.id}${rule.available ? "" : " (unavailable)"}`;
+      const remove = document.createElement("button"); remove.textContent = "Remove"; remove.className = "ghost";
+      remove.onclick = async () => {
+        if (!window.confirm(`Suggest rule ${rule.id} again and rescan?`)) return;
+        await call("exclusion_remove_rule", { ruleId: rule.id, profileId });
+        await renderProfilesSheet(); runScan(state.rootPath);
+      };
+      row.append(" ", remove); article.append(row);
+    }
+    body.append(article);
+  };
+  const sections = exclusionSections(appConfig, knownRules);
+  section(sections[0].title, sections[0].paths, sections[0].rules);
+  for (const profile of appConfig.profiles || []) {
+    const model = sections.find((value) => value.profileId === profile.id);
+    section(model.title, model.paths, model.rules, profile.id);
+    const rename = document.createElement("button"); rename.className = "ghost"; rename.textContent = "Rename";
+    rename.onclick = async () => {
+      const name = window.prompt("Profile name", profile.name);
+      if (!name || name === profile.name) return;
+      await call("profile_update", { id: profile.id, name, root: profile.root });
+      renderProfilesSheet();
+    };
+    const remove = document.createElement("button"); remove.className = "danger"; remove.textContent = `Delete ${profile.name}`;
+    remove.onclick = async () => {
+      if (!window.confirm(`Delete profile “${profile.name}”? Global exclusions will not change.`)) return;
+      await call("profile_delete", { id: profile.id });
+      if (state.activeProfileId === profile.id) state.activeProfileId = null;
+      renderProfilesSheet();
+    };
+    body.lastElementChild.append(rename, " ", remove);
+  }
+}
+
+document.getElementById("manage-profiles").onclick = async () => {
+  document.getElementById("profiles-sheet").hidden = false; await renderProfilesSheet();
+};
+document.getElementById("profiles-close").onclick = () => { document.getElementById("profiles-sheet").hidden = true; };
+
+async function renderHistory() {
+  const body = document.getElementById("history-body"); body.textContent = "Loading…";
+  try {
+    const receipts = await call("history_list"); body.innerHTML = "";
+    if (!receipts.length) { body.textContent = "No cleanup receipts yet."; return; }
+    for (const receipt of receipts) {
+      const view = receiptPresentation(receipt, human);
+      const article = document.createElement("article");
+      article.innerHTML = `<strong></strong><p></p><details><summary>Removed / skipped items</summary><div class="receipt-items"></div></details>`;
+      article.querySelector("strong").textContent = view.title;
+      article.querySelector("p").textContent = `${view.status} · estimated removal ${view.estimated} · system-wide free-space delta ${view.delta} · ${view.counts}${receipt.parse_warning ? ` · ${receipt.parse_warning}` : ""}`;
+      const items = article.querySelector(".receipt-items");
+      for (const item of receipt.items) { const p = document.createElement("p"); p.textContent = `${item.status}: ${item.path} — ${item.rule}${item.regen ? `; restore: ${item.regen}` : ""}${item.reason ? `; ${item.reason}` : ""}`; items.append(p); }
+      const remove = document.createElement("button"); remove.className = "ghost"; remove.textContent = "Delete receipt";
+      remove.onclick = async () => { if (window.confirm("Delete this receipt permanently?")) { await call("history_delete", { receiptId: receipt.receipt_id }); renderHistory(); } };
+      article.append(remove); body.append(article);
+    }
+  } catch (error) { body.textContent = String(error); }
+}
+document.getElementById("open-history").onclick = () => { document.getElementById("history-sheet").hidden = false; renderHistory(); };
+document.getElementById("history-close").onclick = () => { document.getElementById("history-sheet").hidden = true; };
+document.getElementById("history-clear").onclick = async () => {
+  if (!window.confirm("Clear all cleanup history permanently?")) return;
+  await call("history_clear"); renderHistory();
+};
+
 document.getElementById("choose").onclick = async () => {
   const picked = await chooseFolder();
   if (picked) {
     chosenRoot = picked;
+    state.activeProfileId = null;
     offerAccess();
   }
 };
@@ -1626,6 +1940,11 @@ async function boot() {
     console.error(err);
   }
   firstRun = !config.seen_onboarding;
+  appConfig = config;
+  if ((config.profiles || []).some((profile) => profile.id === config.last_profile_id)) {
+    state.activeProfileId = config.last_profile_id;
+  }
+  await refreshProfiles();
   journey = config.seen_onboarding ? ["scope", "access"] : ["intro", "scope", "access"];
   showStep(journey[0]);
   // Deliberately not awaited: the launch check is a network round trip, and the

@@ -27,8 +27,18 @@
         <span>Scan folder…</span>
       </button>
 
+      <select id="profile-selector" aria-label="Saved scan profile">
+        <option value="">Profiles…</option>
+      </select>
+      <button id="save-profile" class="ghost" title="Save current root as a profile">Save profile</button>
+
       <nav id="crumbs" aria-label="Breadcrumb"></nav>
       <div class="spacer"></div>
+
+      <div id="view-mode" class="segmented" role="tablist" aria-label="Findings view">
+        <button role="tab" data-view="map" class="on" aria-selected="true">Map</button>
+        <button role="tab" data-view="list" aria-selected="false">List</button>
+      </div>
 
       <div id="mode" class="segmented" role="tablist" aria-label="Interaction mode">
         <button role="tab" data-mode="explore" class="on" aria-selected="true">Explore</button>
@@ -58,6 +68,26 @@
         </div>
       </div>
 
+      <section id="list-wrap" hidden aria-label="Findings list">
+        <div id="list-controls">
+          <input id="finding-search" type="search" placeholder="Search path, rule, or label" aria-label="Search findings" />
+          <select id="tier-filter" aria-label="Filter by tier">
+            <option value="all">All tiers</option><option value="low">Low</option>
+            <option value="medium">Medium</option><option value="high">High</option>
+          </select>
+          <select id="finding-sort" aria-label="Sort findings">
+            <option value="size">Size</option><option value="age">Age</option>
+            <option value="tier">Tier</option><option value="rule">Rule</option><option value="path">Path</option>
+          </select>
+        </div>
+        <table id="finding-table">
+          <thead><tr><th scope="col">Select</th><th scope="col">Reclaimable</th><th scope="col">Tier</th><th scope="col">Age</th><th scope="col">Rule</th><th scope="col">Path</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <button id="load-more" class="ghost" hidden>Load more</button>
+        <p id="list-status" role="status"></p>
+      </section>
+
       <aside id="panel">
         <div id="summary">
           <div class="stat accent"><span id="reclaimable">—</span><small>reclaimable</small></div>
@@ -70,6 +100,13 @@
           <span><i class="swatch high"></i>high</span>
           <span><i class="swatch none"></i>unclassified</span>
         </div>
+
+        <details id="scan-health" class="card">
+          <summary>Scan Health</summary>
+          <div id="health-body"></div>
+          <button id="copy-diagnostics" class="ghost">Copy diagnostics</button>
+          <textarea id="diagnostics-fallback" readonly hidden aria-label="Diagnostics report"></textarea>
+        </details>
 
         <!-- Above the selection because it is the one thing here that is news.
              Hidden until a check finds something, so the panel of an app that is
@@ -122,6 +159,11 @@
 
         <h2>Findings</h2>
         <ul id="findings"></ul>
+
+        <div class="row utility-links">
+          <button id="manage-profiles" class="ghost">Profiles &amp; Exclusions</button>
+          <button id="open-history" class="ghost">History</button>
+        </div>
 
         <!-- Two different denials land here: a folder the user refused, which
              System Settings can undo, and the ~/Library directories that have no
@@ -233,6 +275,10 @@
     <div id="context-menu" hidden>
       <p class="path"></p>
       <button data-action="reveal">Reveal in Finder</button>
+      <button data-action="exclude-global">Exclude this folder globally</button>
+      <button data-action="exclude-profile">Exclude from this profile</button>
+      <button data-action="exclude-rule-global">Don’t suggest this rule globally</button>
+      <button data-action="exclude-rule-profile">Don’t suggest in this profile</button>
     </div>
 
     <!-- Covers the map for the whole walk. The scan replaces the tree wholesale,
@@ -244,7 +290,19 @@
         <p id="scan-path" class="path"></p>
         <div class="bar"><i></i></div>
         <p id="scan-counts">counting…</p>
+        <button id="cancel-scan" class="ghost">Cancel</button>
       </div>
+    </div>
+
+    <div id="profiles-sheet" class="overlay" hidden>
+      <div class="sheet wide"><h1>Profiles &amp; Exclusions</h1><div id="profiles-body"></div>
+        <div class="actions"><button id="profiles-close" class="primary">Done</button></div></div>
+    </div>
+
+    <div id="history-sheet" class="overlay" hidden>
+      <div class="sheet wide"><h1>Cleanup History</h1><p>Receipts are local records, not undo.</p>
+        <div id="history-body"></div><div class="actions"><button id="history-clear" class="danger">Clear History</button>
+        <button id="history-close" class="primary">Done</button></div></div>
     </div>
 
     <div id="tooltip" hidden></div>

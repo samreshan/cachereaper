@@ -1,5 +1,6 @@
 """Tests for cachereaper. Run: python3 -m unittest discover -s tests -v"""
 
+import json
 import os
 import shutil
 import subprocess
@@ -256,6 +257,8 @@ class TestGitignoreGating(unittest.TestCase):
 class TestEndToEnd(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        self.old_log_dir = cr.LOG_DIR
+        cr.LOG_DIR = self.tmp / ".cachereaper"
         self.proj = self.tmp / "demo"
         (self.proj / "src").mkdir(parents=True)
         (self.proj / "Cargo.toml").touch()
@@ -267,6 +270,7 @@ class TestEndToEnd(unittest.TestCase):
         (self.proj / ".venv" / "pyvenv.cfg").touch()
 
     def tearDown(self):
+        cr.LOG_DIR = self.old_log_dir
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_scan_measure_and_delete(self):
@@ -298,6 +302,7 @@ class TestEndToEnd(unittest.TestCase):
         self.assertGreater(freed, 0)
         self.assertTrue((self.proj / "target").exists())
         self.assertTrue((self.proj / "node_modules").exists())
+        self.assertFalse(list(cr.LOG_DIR.glob("*.jsonl")), "dry runs must not create history")
 
     def test_delete_writes_a_log(self):
         import json
@@ -306,10 +311,10 @@ class TestEndToEnd(unittest.TestCase):
         victim = cands[0]
         cr.delete([victim], dry_run=False, allowed=[self.tmp])
 
-        logs = sorted(cr.LOG_DIR.glob("reap-*.jsonl"))
+        logs = sorted(cr.LOG_DIR.glob("receipt-*.jsonl"))
         self.assertTrue(logs, "a deletion must leave an audit log")
         entries = [json.loads(line) for line in logs[-1].read_text().splitlines() if line]
-        match = [e for e in entries if e["path"] == str(victim.path)]
+        match = [e for e in entries if e.get("kind") == "item" and e["path"] == str(victim.path)]
         self.assertEqual(len(match), 1, "the deleted path must appear exactly once")
         self.assertEqual(match[0]["rule"], victim.rule_id)
         self.assertIn("regen", match[0])
@@ -338,6 +343,70 @@ class TestStaticRuleSanity(unittest.TestCase):
             probe = base / rule.glob.lstrip("/")
             self.assertEqual(cr.path_is_protected(probe), "", rule.id)
 
+
+class TestSavedExclusions(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.old_log_dir = cr.LOG_DIR
+        cr.LOG_DIR = self.tmp / ".cachereaper"
+        cr.LOG_DIR.mkdir()
+        self.root = self.tmp / "work"
+        write(self.root / "keep" / "node_modules" / "blob")
+        write(self.root / "skip" / "node_modules" / "blob")
+
+    def tearDown(self):
+        cr.LOG_DIR = self.old_log_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def args(self, *extra):
+        return cr.build_parser().parse_args([
+            "scan", "--no-static", "--tier", "high", "--roots", str(self.root), *extra
+        ])
+
+    def test_global_and_session_path_exclusions_are_combined(self):
+        (cr.LOG_DIR / "config.json").write_text(json.dumps({
+            "global_excluded_paths": [str(self.root / "skip")],
+        }))
+        args = self.args("--exclude-path", str(self.root / "keep"))
+        cr.apply_saved_scan_settings(args)
+        self.assertEqual(cr.collect(args), [])
+
+    def test_profile_resolves_root_and_rule_exclusions(self):
+        (cr.LOG_DIR / "config.json").write_text(json.dumps({
+            "global_excluded_rules": [],
+            "profiles": [{"id": "p1", "name": "Work", "root": str(self.root),
+                          "excluded_paths": [], "excluded_rules": ["node-modules"]}],
+        }))
+        args = cr.build_parser().parse_args(["scan", "--no-static", "--tier", "high", "--profile", "work"])
+        cr.apply_saved_scan_settings(args)
+        self.assertEqual(args.roots, [str(self.root)])
+        self.assertEqual(cr.collect(args), [])
+
+    def test_ignore_saved_exclusions_keeps_profile_root(self):
+        (cr.LOG_DIR / "config.json").write_text(json.dumps({
+            "profiles": [{"id": "p1", "name": "Work", "root": str(self.root),
+                          "excluded_paths": [str(self.root)], "excluded_rules": ["node-modules"]}],
+        }))
+        args = cr.build_parser().parse_args([
+            "scan", "--no-static", "--tier", "high", "--profile", "p1", "--ignore-saved-exclusions"
+        ])
+        cr.apply_saved_scan_settings(args)
+        self.assertEqual(len(cr.collect(args)), 2)
+
+    def test_profile_and_roots_conflict(self):
+        with self.assertRaises(SystemExit):
+            cr.build_parser().parse_args(["scan", "--profile", "p1", "--roots", str(self.root)])
+
+    def test_malformed_config_warns_and_falls_back(self):
+        import contextlib
+        import io
+        (cr.LOG_DIR / "config.json").write_text("{broken")
+        error = io.StringIO()
+        args = self.args()
+        with contextlib.redirect_stderr(error):
+            cr.apply_saved_scan_settings(args)
+        self.assertIn("ignoring malformed config", error.getvalue())
+        self.assertEqual(len(cr.collect(args)), 2)
 
 class TestUpdate(unittest.TestCase):
     """The update path, minus the network. Nothing here reaches GitHub: the two

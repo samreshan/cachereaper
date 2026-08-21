@@ -210,7 +210,7 @@ dependencies = [
 
 [[package]]
 name = "cachereaper-core"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "cachereaper-gui"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "cachereaper-core",
  "serde",
