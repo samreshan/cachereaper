@@ -1,17 +1,16 @@
 # Releasing
 
-## 1.6.0 — Trust and Control
+## 1.6.1 — Start with control
 
-Adds cancelable scans, explicit reclaimable/allocated/logical accounting,
-searchable Map/List findings, global and profile exclusions, reusable scan
-profiles, and durable local cleanup receipts with History. No telemetry,
-scheduled cleanup, vendor cleanup automation, or background deletion was added.
+Adds a task-led home screen with direct folder and saved-profile choices. Update
+checks now start when the app opens and an available update is actionable from
+that home screen, before any scan completes.
 
 Tag it and push. The rest is CI.
 
 ```bash
-git tag -a v1.6.0 -m "What changed, in a sentence or three."
-git push origin v1.6.0
+git tag -a v1.6.1 -m "What changed, in a sentence or three."
+git push origin v1.6.1
 ```
 
 The tag message is not decoration: it becomes the release note shown inside the

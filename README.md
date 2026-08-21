@@ -190,12 +190,13 @@ the access or update preferences already stored there.
 
 ### Updates
 
-The app asks the release page whether there is a newer build each time it opens,
-and says nothing unless there is. When there is, a card at the top of the panel
-names the version and offers to install it — one click, and it downloads,
-replaces itself and restarts. Nothing about your machine is sent, and nothing is
-installed without being asked for: this tool deletes files, so the binary that
-does that is not something to swap out quietly.
+The app asks the release page whether there is a newer build as soon as it
+opens, before a folder is chosen or a scan begins, and says nothing unless there
+is. When there is, the home screen names the version and offers to install it —
+one click, and it downloads, replaces itself and restarts. The same card stays
+available in the results panel after a scan. Nothing about your machine is sent,
+and nothing is installed without being asked for: this tool deletes files, so
+the binary that does that is not something to swap out quietly.
 
 The bottom of the panel has the version, a **Check for updates** button for
 asking on the spot, and a **check on launch** switch if you would rather it

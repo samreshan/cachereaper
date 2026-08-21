@@ -51,6 +51,23 @@ const state = {
   listPages: 1,
 };
 
+const home = document.getElementById("home");
+const homeStatus = document.getElementById("home-status");
+
+function showHome(message = null) {
+  onboarding.hidden = true;
+  home.hidden = false;
+  document.body.classList.add("at-home");
+  homeStatus.hidden = !message;
+  homeStatus.textContent = message || "";
+  setStatus(null);
+}
+
+function hideHome() {
+  home.hidden = true;
+  document.body.classList.remove("at-home");
+}
+
 // Timestamp rather than a boolean: a drag is normally followed by a click, but
 // not always. A sticky flag would sit there and swallow the next real click.
 let lastDragEnd = 0;
@@ -157,11 +174,11 @@ function browserStub() {
     open_privacy_settings: async () => {},
     set_seen_onboarding: async () => {},
     reveal: async () => {},
-    app_version: async () => "1.6.0-dev",
+    app_version: async () => "1.6.1-dev",
     set_auto_update: async () => {},
     update_check: async () =>
       pretendBehind
-        ? { version: "9.9.9", current: "1.6.0-dev", notes: "A pretend release, for working on this card." }
+        ? { version: "9.9.9", current: "1.6.1-dev", notes: "A pretend release, for working on this card." }
         : null,
     update_install: async () => {
       throw new Error("installing an update needs the desktop app");
@@ -1304,6 +1321,7 @@ const scanningEl = document.getElementById("scanning");
 async function runScan(path) {
   if (scanning) return;
   const hadTree = state.nodes.length > 0;
+  hideHome();
   scanning = true;
   activeScanId = typeof crypto?.randomUUID === "function"
     ? crypto.randomUUID() : `scan-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1336,9 +1354,7 @@ async function runScan(path) {
     // Come back to the journey if we never got a tree: an empty map with the
     // sheet gone is a dead end.
     setStatus(null);
-    showStep("scope");
-    onboardError.hidden = false;
-    onboardError.textContent = cancelled ? "Scan cancelled" : String(err);
+    showHome(cancelled ? "Scan cancelled" : `Could not scan this folder: ${String(err)}`);
     console.error(err);
   } finally {
     scanning = false;
@@ -1374,10 +1390,14 @@ async function chooseFolder() {
 // automatic half is the *looking*, and the deciding stays with the user.
 
 const updateCard = document.getElementById("update-card");
+const homeUpdate = document.getElementById("home-update");
 const updateStatusEl = document.getElementById("update-status");
 const updateLook = document.getElementById("update-look");
 const updateAuto = document.getElementById("update-auto");
 const updateInstall = document.getElementById("update-install");
+const homeUpdateInstall = document.getElementById("home-update-install");
+
+const updateInstallButtons = [updateInstall, homeUpdateInstall];
 
 // Guards the one action that must not be started twice. The Rust side keeps the
 // pending update available after a failed download so this button can retry.
@@ -1397,6 +1417,10 @@ function showUpdate(info) {
   notes.hidden = !body;
   notes.textContent = body;
   updateCard.hidden = false;
+  document.getElementById("home-update-headline").textContent = `Version ${info.version} is ready`;
+  document.getElementById("home-update-copy").textContent =
+    `You have ${info.current}. Downloaded updates are verified before installation.`;
+  homeUpdate.hidden = false;
   updateSays(null);
 }
 
@@ -1416,6 +1440,7 @@ async function lookForUpdate(manual) {
     if (info) showUpdate(info);
     else {
       updateCard.hidden = true;
+      homeUpdate.hidden = true;
       if (manual) updateSays("You have the newest version.");
     }
   } catch (err) {
@@ -1428,12 +1453,16 @@ async function lookForUpdate(manual) {
 
 updateLook.onclick = () => lookForUpdate(true);
 
-document.getElementById("update-later").onclick = () => {
+function dismissUpdate() {
   // For this session only. A build worth telling you about once is worth
   // telling you about again next launch, and a setting to silence one specific
   // version is a setting that has to be got right forever.
   updateCard.hidden = true;
-};
+  homeUpdate.hidden = true;
+}
+
+document.getElementById("update-later").onclick = dismissUpdate;
+document.getElementById("home-update-later").onclick = dismissUpdate;
 
 updateAuto.onchange = async () => {
   try {
@@ -1445,11 +1474,13 @@ updateAuto.onchange = async () => {
   }
 };
 
-updateInstall.onclick = async () => {
+async function installUpdate() {
   if (installing) return;
   installing = true;
-  updateInstall.disabled = true;
-  updateInstall.textContent = "Downloading…";
+  for (const button of updateInstallButtons) {
+    button.disabled = true;
+    button.textContent = "Downloading…";
+  }
 
   try {
     if (inTauri && !updateProgressBound) {
@@ -1457,9 +1488,10 @@ updateInstall.onclick = async () => {
       await listen("update-progress", ({ payload }) => {
         // The manifest carries a length for both platforms, but a proxy that
         // strips it would otherwise leave the button reading "NaN%".
-        updateInstall.textContent = payload.total
+        const label = payload.total
           ? `Downloading ${Math.round((payload.downloaded / payload.total) * 100)}%`
           : `Downloading ${human(payload.downloaded)}`;
+        for (const button of updateInstallButtons) button.textContent = label;
       });
       updateProgressBound = true;
     }
@@ -1468,22 +1500,30 @@ updateInstall.onclick = async () => {
   } catch (err) {
     console.error(err);
     installing = false;
-    updateInstall.disabled = false;
-    updateInstall.textContent = "Install and restart";
+    for (const button of updateInstallButtons) {
+      button.disabled = false;
+      button.textContent = "Install and restart";
+    }
     updateSays(`Update failed: ${err}`);
   }
-};
+}
 
-/** Version line, the switch, and — if the switch is on — the launch check. */
+updateInstall.onclick = installUpdate;
+homeUpdateInstall.onclick = installUpdate;
+
+/** Version line, the switch, and a launch check started as soon as config arrives. */
 async function initUpdates(config) {
   updateAuto.checked = config.auto_update !== false;
+  // Start this before any scope/profile work. The card is rendered on the home
+  // screen, so an available update is actionable as soon as the app opens — it
+  // is not held behind a completed scan.
+  if (updateAuto.checked) void lookForUpdate(false);
   try {
     document.getElementById("app-version").textContent = `cachereaper ${await call("app_version")}`;
     renderHealth();
   } catch (err) {
     console.error(err);
   }
-  if (updateAuto.checked) lookForUpdate(false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1616,6 +1656,23 @@ document.getElementById("scope-home").onclick = () => {
   chosenRoot = null;
   state.activeProfileId = null;
   offerAccess();
+};
+
+document.getElementById("home-scan-home").onclick = () => {
+  chosenRoot = null;
+  state.activeProfileId = null;
+  hideHome();
+  offerAccess();
+};
+
+document.getElementById("home-choose-folder").onclick = async () => {
+  const picked = await chooseFolder();
+  if (picked) {
+    chosenRoot = picked;
+    state.activeProfileId = null;
+    hideHome();
+    offerAccess();
+  }
 };
 
 document.getElementById("scope-choose").onclick = async () => {
@@ -1820,6 +1877,34 @@ async function refreshProfiles() {
     const option = document.createElement("option"); option.value = profile.id; option.textContent = profile.name; select.append(option);
   }
   select.value = state.activeProfileId || "";
+  renderHomeProfiles();
+}
+
+function renderHomeProfiles() {
+  const holder = document.getElementById("home-profiles");
+  holder.innerHTML = "";
+  const profiles = appConfig?.profiles || [];
+  if (!profiles.length) {
+    const note = document.createElement("p");
+    note.className = "home-empty";
+    note.textContent = "Save a folder as a profile after scanning it.";
+    holder.append(note);
+    return;
+  }
+  for (const profile of profiles) {
+    const button = document.createElement("button");
+    button.className = "home-profile";
+    button.innerHTML = "<span></span><small></small>";
+    button.querySelector("span").textContent = profile.name;
+    button.querySelector("small").textContent = profile.root;
+    button.onclick = async () => {
+      state.activeProfileId = profile.id;
+      chosenRoot = null;
+      hideHome();
+      await runScan();
+    };
+    holder.append(button);
+  }
 }
 
 document.getElementById("profile-selector").onchange = async (event) => {
@@ -1928,9 +2013,12 @@ document.getElementById("choose").onclick = async () => {
   if (picked) {
     chosenRoot = picked;
     state.activeProfileId = null;
+    hideHome();
     offerAccess();
   }
 };
+
+document.getElementById("home-button").onclick = () => showHome();
 
 async function boot() {
   let config = { seen_onboarding: false };
@@ -1941,15 +2029,17 @@ async function boot() {
   }
   firstRun = !config.seen_onboarding;
   appConfig = config;
+  // This begins the update check immediately after the application has opened,
+  // before profile loading or a possible scan can delay it.
+  initUpdates(config);
   if ((config.profiles || []).some((profile) => profile.id === config.last_profile_id)) {
     state.activeProfileId = config.last_profile_id;
   }
   await refreshProfiles();
-  journey = config.seen_onboarding ? ["scope", "access"] : ["intro", "scope", "access"];
-  showStep(journey[0]);
-  // Deliberately not awaited: the launch check is a network round trip, and the
-  // folder step should be on screen before it, not after it.
-  initUpdates(config);
+  // The home page is the entry point for every launch. The retained access
+  // sheet appears only after a concrete scan scope has been chosen.
+  journey = ["scope", "access"];
+  showHome();
   initSupport();
 }
 

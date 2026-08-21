@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 REPO = "samreshan/cachereaper"
 HOME = Path.home()
 LOG_DIR = HOME / ".cachereaper"

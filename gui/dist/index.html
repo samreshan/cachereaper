@@ -14,6 +14,8 @@
         <span>cachereaper</span>
       </div>
 
+      <button id="home-button" class="ghost" title="Return to the start page">Home</button>
+
       <button id="choose" title="Scan a different folder">
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
           <path
@@ -193,6 +195,54 @@
         </footer>
       </aside>
     </main>
+
+    <!-- The app always opens here. It is deliberately a useful starting point,
+         not an empty map wearing an onboarding dialog: a scan is an explicit
+         choice, and an available update can be acted on before any disk walk
+         starts. -->
+    <section id="home" aria-labelledby="home-title">
+      <div class="home-shell">
+        <div class="home-intro">
+          <img src="reaper.svg" alt="" width="64" height="66" />
+          <p class="home-kicker">Disk cleanup, with receipts</p>
+          <h1 id="home-title">Make room, deliberately.</h1>
+          <p class="home-lede">
+            See what is reclaimable before you remove it. CacheReaper reads
+            only the folder you choose, then keeps a local receipt of cleanup.
+          </p>
+          <div class="home-actions">
+            <button id="home-scan-home" class="primary">Scan home folder</button>
+            <button id="home-choose-folder" class="ghost">Choose a folder…</button>
+          </div>
+          <p class="home-note">Scanning is read-only. Nothing is deleted unless you select and confirm it.</p>
+          <p id="home-status" role="status" hidden></p>
+        </div>
+
+        <aside class="home-side" aria-label="Start options">
+          <section class="home-section">
+            <h2>Saved places</h2>
+            <div id="home-profiles"></div>
+          </section>
+          <section id="home-update" class="home-section home-update" hidden aria-live="polite">
+            <p class="home-kicker">Update ready</p>
+            <h2 id="home-update-headline">A new version is available</h2>
+            <p id="home-update-copy"></p>
+            <div class="home-update-actions">
+              <button id="home-update-install" class="primary">Install and restart</button>
+              <button id="home-update-later" class="ghost">Later</button>
+            </div>
+          </section>
+          <section class="home-section home-principles">
+            <h2>Built for control</h2>
+            <ul>
+              <li>Understand every reported byte.</li>
+              <li>Stop a scan at any time.</li>
+              <li>Keep cleanup history on this device.</li>
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </section>
 
     <!-- The onboarding journey, and the access sheet, and nothing else: the
          access step is the same markup whether it is step three of a first run

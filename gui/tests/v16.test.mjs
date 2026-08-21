@@ -36,7 +36,7 @@ const sections = exclusionSections({ global_excluded_rules: ["known", "future"],
 ok(sections[0].rules[0].available && !sections[0].rules[1].available, "unknown saved rules remain visible as unavailable");
 
 const html = fs.readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
-for (const id of ["view-mode", "finding-search", "finding-table", "scan-health", "copy-diagnostics", "cancel-scan", "profile-selector", "profiles-sheet", "history-sheet"]) {
+for (const id of ["view-mode", "finding-search", "finding-table", "scan-health", "copy-diagnostics", "cancel-scan", "profile-selector", "profiles-sheet", "history-sheet", "home", "home-scan-home", "home-choose-folder", "home-update"]) {
   ok(html.includes(`id="${id}"`), `required DOM id ${id}`);
 }
 
