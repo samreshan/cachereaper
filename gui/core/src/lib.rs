@@ -22,6 +22,8 @@ pub mod quarantine;
 pub mod rules;
 pub mod scan;
 pub mod trash;
+#[cfg(windows)]
+mod windows_identity;
 
 pub use access::{AccessState, Gate, SettingsPane};
 pub use ai::{

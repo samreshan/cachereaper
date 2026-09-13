@@ -81,3 +81,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build the Tauri binary
         run: cargo build --release --manifest-path gui/src-tauri/Cargo.toml
+
+  windows-core:
+    name: Scanner tests on Windows stable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Windows-only filesystem integrations
+        run: cargo test --manifest-path gui/core/Cargo.toml

@@ -243,9 +243,9 @@ struct Shared {
     dirs: AtomicU64,
     unreadable: AtomicU64,
     root_volume: VolumeId,
-    /// Unix hard links expose the same inode through more than one directory
+    /// Hard links expose the same file identity through more than one directory
     /// entry. Count its blocks once, as `du` does, instead of once per name.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     seen_hard_links: Mutex<std::collections::HashSet<(u64, u64)>>,
     /// file names worth remembering, supplied by the rule table
     markers: std::collections::HashSet<String>,
@@ -435,19 +435,37 @@ fn entry_mtime(md: &std::fs::Metadata) -> i64 {
 }
 
 #[cfg(windows)]
-fn file_cache_identity(md: &std::fs::Metadata) -> (u64, u64, u128) {
+fn file_cache_identity(
+    identity: crate::windows_identity::FileIdentity,
+    md: &std::fs::Metadata,
+) -> (u64, u64, u128) {
     (
-        u64::from(md.volume_serial_number().unwrap_or(0)),
-        md.file_index().unwrap_or(0),
+        identity.volume,
+        identity.file,
         u128::from(md.last_write_time()).saturating_mul(100),
     )
+}
+
+#[cfg(windows)]
+fn duplicate_hard_link(
+    shared: &Shared,
+    identity: crate::windows_identity::FileIdentity,
+) -> bool {
+    if identity.links <= 1 {
+        return false;
+    }
+    !shared
+        .seen_hard_links
+        .lock()
+        .unwrap()
+        .insert((identity.volume, identity.file))
 }
 
 /// How a volume is identified, which is only possible on one of the two.
 #[cfg(unix)]
 type VolumeId = u64;
 #[cfg(windows)]
-type VolumeId = ();
+type VolumeId = u8;
 
 #[cfg(unix)]
 fn volume_of(md: &std::fs::Metadata) -> VolumeId {
@@ -455,7 +473,9 @@ fn volume_of(md: &std::fs::Metadata) -> VolumeId {
 }
 
 #[cfg(windows)]
-fn volume_of(_md: &std::fs::Metadata) -> VolumeId {}
+fn volume_of(_md: &std::fs::Metadata) -> VolumeId {
+    0
+}
 
 /// Whether descending into this directory would leave the volume we started on.
 #[cfg(unix)]
@@ -592,7 +612,7 @@ where
         dirs: AtomicU64::new(1),
         unreadable: AtomicU64::new(0),
         root_volume: volume_of(&root_md),
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         seen_hard_links: Mutex::new(Default::default()),
         markers: options.markers,
         // The unconditional refusals are the scanner's own business, so every
@@ -757,7 +777,13 @@ fn worker<F: Fn(u64, u64, u128)>(shared: &Shared, progress: &F, started: Instant
                         #[cfg(unix)]
                         let duplicate = duplicate_hard_link(shared, &md);
                         #[cfg(windows)]
-                        let duplicate = false;
+                        let windows_identity = (shared.mode.keeps_file_inventory()
+                            && md.is_file()
+                            && !md.file_type().is_symlink())
+                        .then(|| crate::windows_identity::query_or_path(&entry_path));
+                        #[cfg(windows)]
+                        let duplicate = windows_identity
+                            .is_some_and(|identity| duplicate_hard_link(shared, identity));
                         if !duplicate {
                             let reclaimable_size = entry_size(&entry_path, &md);
                             own_size += reclaimable_size;
@@ -767,7 +793,14 @@ fn worker<F: Fn(u64, u64, u128)>(shared: &Shared, progress: &F, started: Instant
                                 && md.is_file()
                                 && !md.file_type().is_symlink()
                             {
+                                #[cfg(unix)]
                                 let (volume_id, file_id, modified_ns) = file_cache_identity(&md);
+                                #[cfg(windows)]
+                                let (volume_id, file_id, modified_ns) =
+                                    file_cache_identity(
+                                        windows_identity.expect("inventory files have an identity"),
+                                        &md,
+                                    );
                                 file_records.push(FileRecord {
                                     parent: idx,
                                     name: entry.file_name().to_string_lossy().into_owned(),

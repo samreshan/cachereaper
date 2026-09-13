@@ -579,15 +579,8 @@ fn root_identity(path: &Path) -> String {
 
 #[cfg(windows)]
 fn root_identity(path: &Path) -> String {
-    use std::os::windows::fs::MetadataExt;
-    std::fs::metadata(path)
-        .map(|metadata| {
-            format!(
-                "{}:{}",
-                metadata.volume_serial_number().unwrap_or(0),
-                metadata.file_index().unwrap_or(0)
-            )
-        })
+    crate::windows_identity::query(path)
+        .map(|identity| format!("{}:{}", identity.volume, identity.file))
         .unwrap_or_else(|_| path.to_string_lossy().into_owned())
 }
 

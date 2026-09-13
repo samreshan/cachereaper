@@ -17,6 +17,9 @@ serde_json = "1"
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"], optional = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem"] }
+
 [lib]
 name = "cachereaper_core"
 path = "src/lib.rs"
