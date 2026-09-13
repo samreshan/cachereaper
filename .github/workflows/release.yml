@@ -186,6 +186,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # On an annotated-tag push, checkout can leave a lightweight local tag
+      # pointing at GITHUB_SHA even though the remote ref points at the tag
+      # object. Fetch the ref explicitly or the updater/release notes silently
+      # degrade to the tagged commit's subject line.
+      - name: Fetch and verify the annotated release tag
+        shell: bash
+        run: |
+          git fetch --force origin \
+            "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          [ "$(git cat-file -t "$GITHUB_REF_NAME")" = tag ] \
+            || { echo "::error::$GITHUB_REF_NAME is not an annotated tag"; exit 1; }
+          [ "$(git rev-parse "${GITHUB_REF_NAME}^{}")" = "$GITHUB_SHA" ] \
+            || { echo "::error::$GITHUB_REF_NAME does not resolve to $GITHUB_SHA"; exit 1; }
+
       - uses: actions/download-artifact@v4
         with:
           path: bundles

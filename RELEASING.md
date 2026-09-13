@@ -11,13 +11,15 @@ anomalies. See `RELEASE_NOTES.md` for the complete user-facing notes.
 Tag it and push. The rest is CI.
 
 ```bash
-git tag -a v2.0.0 -F RELEASE_NOTES.md
+git tag -a --cleanup=verbatim v2.0.0 -F RELEASE_NOTES.md
 git push origin v2.0.0
 ```
 
 The tag message is not decoration: it becomes the release note shown inside the
-app when an installed copy is offered the update. An unannotated tag falls back
-to `cachereaper <version>`.
+app when an installed copy is offered the update. The publish job explicitly
+fetches and verifies the remote annotated-tag object before reading those notes;
+it rejects a lightweight tag or a tag that does not resolve to the workflow's
+commit.
 
 Bump these together first — CI does not check them against the tag, and a
 version that disagrees with itself ships without complaint:
