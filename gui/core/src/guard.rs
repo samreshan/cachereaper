@@ -263,9 +263,16 @@ mod tests {
 
     #[test]
     fn rejects_targets_outside_allowed_roots() {
-        let home = home();
+        #[cfg(not(windows))]
+        let allowed = PathBuf::from("/home/example");
+        #[cfg(not(windows))]
+        let outside = PathBuf::from("/private/tmp/x/node_modules");
+        #[cfg(windows)]
+        let allowed = PathBuf::from(r"D:\Allowed");
+        #[cfg(windows)]
+        let outside = PathBuf::from(r"C:\CacheReaperOutside\x\node_modules");
         let target = Target {
-            path: PathBuf::from("/private/tmp/x/node_modules"),
+            path: outside,
             rule_id: "node-modules".into(),
             tier: "medium".into(),
             expect_name: "node_modules".into(),
@@ -274,7 +281,7 @@ mod tests {
             regen: String::new(),
         };
         assert_eq!(
-            validate_for_delete(&target, &[home]),
+            validate_for_delete(&target, &[allowed]),
             "outside allowed roots"
         );
     }
