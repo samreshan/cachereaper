@@ -7,6 +7,7 @@
     "high"
   ],
   "forbidden_parts": [
+    ".cachereaper-quarantine",
     ".git",
     ".gnupg",
     ".hg",
