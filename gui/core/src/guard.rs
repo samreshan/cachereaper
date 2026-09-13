@@ -21,6 +21,7 @@ pub const FORBIDDEN_PARTS: &[&str] = &[
     "CloudStorage",
     "Photos Library.photoslibrary",
     "Mobile Documents",
+    ".cachereaper-quarantine",
 ];
 
 pub const CLOUD_DIR_HINTS: &[&str] = &[
@@ -44,9 +45,7 @@ pub const CLOUD_DIR_HINTS: &[&str] = &[
 pub fn looks_like_cloud_dir(name: &str) -> bool {
     let low = name.to_lowercase();
     CLOUD_DIR_HINTS.iter().any(|hint| {
-        low == *hint
-            || low.starts_with(&format!("{hint} "))
-            || low.starts_with(&format!("{hint}-"))
+        low == *hint || low.starts_with(&format!("{hint} ")) || low.starts_with(&format!("{hint}-"))
     })
 }
 
@@ -119,6 +118,44 @@ pub fn path_is_protected(path: &Path) -> String {
 
 pub fn is_within(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
+}
+
+/// Find an immutable reference boundary overlapping `path`.
+///
+/// The lexical comparison protects the saved namespace even while an external
+/// volume is disconnected. Canonical comparison additionally prevents a path
+/// outside that namespace from reaching a reference root through a symlinked
+/// ancestor. The reverse comparison prevents removal of a parent that contains
+/// a reference root. Callers still perform normal file-type and identity checks.
+pub fn matching_reference_root<'a>(
+    path: &Path,
+    reference_roots: &'a [PathBuf],
+) -> Option<&'a PathBuf> {
+    let canonical_path = canonicalize_with_missing_tail(path);
+    reference_roots.iter().find(|root| {
+        is_within(path, root)
+            || is_within(root, path)
+            || canonical_path.as_ref().is_some_and(|candidate| {
+                canonicalize_with_missing_tail(root).is_some_and(|canonical_root| {
+                    is_within(candidate, &canonical_root) || is_within(&canonical_root, candidate)
+                })
+            })
+    })
+}
+
+fn canonicalize_with_missing_tail(path: &Path) -> Option<PathBuf> {
+    let mut cursor = path;
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(mut canonical) = cursor.canonicalize() {
+            for component in missing.iter().rev() {
+                canonical.push(component);
+            }
+            return Some(canonical);
+        }
+        missing.push(cursor.file_name()?.to_os_string());
+        cursor = cursor.parent()?;
+    }
 }
 
 /// A path selected for deletion, carried from scan time to delete time.
@@ -240,6 +277,60 @@ mod tests {
             validate_for_delete(&target, &[home]),
             "outside allowed roots"
         );
+    }
+
+    #[test]
+    fn reference_roots_cover_the_root_and_descendants_but_not_siblings() {
+        let reference = PathBuf::from("/Users/example/Archive");
+        let roots = vec![reference.clone()];
+        assert_eq!(
+            matching_reference_root(&reference, &roots),
+            Some(&reference)
+        );
+        assert_eq!(
+            matching_reference_root(Path::new("/Users/example/Archive/photo.raw"), &roots),
+            Some(&reference)
+        );
+        assert_eq!(
+            matching_reference_root(Path::new("/Users/example"), &roots),
+            Some(&reference),
+            "removing an ancestor would also mutate the reference root"
+        );
+        assert!(
+            matching_reference_root(Path::new("/Users/example/Archive-old/file"), &roots).is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reference_roots_cannot_be_reached_through_a_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!(
+            "cachereaper-reference-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let reference = base.join("masters");
+        std::fs::create_dir_all(&reference).unwrap();
+        std::fs::write(reference.join("photo.raw"), b"master").unwrap();
+        let alias = base.join("ordinary-looking-folder");
+        symlink(&reference, &alias).unwrap();
+
+        let roots = vec![reference.clone()];
+        assert_eq!(
+            matching_reference_root(&alias.join("photo.raw"), &roots),
+            Some(&reference)
+        );
+        assert_eq!(
+            matching_reference_root(&alias.join("not-created-yet.raw"), &roots),
+            Some(&reference),
+            "restore targets must resolve their existing parent"
+        );
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[test]

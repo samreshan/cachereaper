@@ -24,6 +24,7 @@ export function diagnostics(payload, { home = "", platform = "unknown", version 
   const lines = [
     `CacheReaper ${version} diagnostics`,
     `Platform: ${platform}`,
+    `Scan schema/mode: ${payload.schema ?? 1}/${payload.mode ?? "cache"}`,
     `Root: ${redactPath(payload.root_path, home)}`,
     `Reclaimable bytes: ${stats.reclaimable_bytes ?? stats.bytes ?? 0}`,
     `Allocated-reference bytes: ${stats.allocated_reference_bytes ?? "unavailable"}`,

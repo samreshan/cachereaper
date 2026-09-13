@@ -27,6 +27,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
+use crate::mode::ScanMode;
+
 pub const NONE: u32 = u32::MAX;
 
 /// Cheap, cloneable cancellation shared by the desktop command and every
@@ -79,6 +81,9 @@ pub struct ScanOptions {
     pub security_skips: Vec<PathBuf>,
     /// User configured boundaries, represented in the returned tree as empty.
     pub excluded_paths: Vec<PathBuf>,
+    /// Controls whether the walk remains directory-only or retains a compact
+    /// file inventory for post-scan analyzers. It never changes path guards.
+    pub mode: ScanMode,
     pub cancellation: CancellationToken,
 }
 
@@ -89,9 +94,27 @@ impl Default for ScanOptions {
             markers: Default::default(),
             security_skips: Vec::new(),
             excluded_paths: Vec::new(),
+            mode: ScanMode::Cache,
             cancellation: CancellationToken::new(),
         }
     }
+}
+
+/// Compact file metadata retained only by Whole Disk and All Files scans.
+/// The absolute path is reconstructed through `parent`, so the directory path
+/// is not repeated for every file in a large inventory.
+#[derive(Debug, Clone)]
+pub struct FileRecord {
+    pub parent: u32,
+    pub name: String,
+    pub reclaimable_size: u64,
+    pub logical_size: u64,
+    pub mtime: i64,
+    /// Stable filesystem identity plus high-resolution modification time used
+    /// only as a cache key. It is never exposed as deletion authority.
+    pub volume_id: u64,
+    pub file_id: u64,
+    pub modified_ns: u128,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -171,6 +194,7 @@ pub struct ScanStats {
 
 pub struct Tree {
     pub nodes: Vec<Node>,
+    pub files: Vec<FileRecord>,
     pub root_path: PathBuf,
     pub stats: ScanStats,
 }
@@ -194,6 +218,10 @@ impl Tree {
         }
         path
     }
+
+    pub fn file_path(&self, file: &FileRecord) -> PathBuf {
+        self.path_of(file.parent).join(&file.name)
+    }
 }
 
 /// Work queue and the count of directories currently being processed, under one
@@ -207,6 +235,7 @@ struct Shared {
     work: Mutex<Work>,
     cv: Condvar,
     arena: Mutex<Vec<Node>>,
+    file_records: Mutex<Vec<FileRecord>>,
     files: AtomicU64,
     bytes: AtomicU64,
     allocated_reference_bytes: AtomicU64,
@@ -226,6 +255,7 @@ struct Shared {
     security_skip: std::collections::HashSet<PathBuf>,
     excluded_paths: Vec<PathBuf>,
     cancellation: CancellationToken,
+    mode: ScanMode,
 }
 
 /// Bytes this entry actually occupies on disk.
@@ -384,6 +414,17 @@ fn entry_mtime(md: &std::fs::Metadata) -> i64 {
     md.mtime()
 }
 
+#[cfg(unix)]
+fn file_cache_identity(md: &std::fs::Metadata) -> (u64, u64, u128) {
+    let seconds = md.mtime().max(0) as u128;
+    let nanos = md.mtime_nsec().max(0) as u128;
+    (
+        md.dev(),
+        md.ino(),
+        seconds.saturating_mul(1_000_000_000).saturating_add(nanos),
+    )
+}
+
 /// Windows counts 100-nanosecond ticks from 1601 instead, so the value has to be
 /// rebased before the frontend — which only ever speaks unix seconds — sees it.
 #[cfg(windows)]
@@ -391,6 +432,15 @@ fn entry_mtime(md: &std::fs::Metadata) -> i64 {
     const TICKS_PER_SECOND: u64 = 10_000_000;
     const SECONDS_1601_TO_1970: u64 = 11_644_473_600;
     (md.last_write_time() / TICKS_PER_SECOND).saturating_sub(SECONDS_1601_TO_1970) as i64
+}
+
+#[cfg(windows)]
+fn file_cache_identity(md: &std::fs::Metadata) -> (u64, u64, u128) {
+    (
+        u64::from(md.volume_serial_number().unwrap_or(0)),
+        md.file_index().unwrap_or(0),
+        u128::from(md.last_write_time()).saturating_mul(100),
+    )
 }
 
 /// How a volume is identified, which is only possible on one of the two.
@@ -534,6 +584,7 @@ where
         }),
         cv: Condvar::new(),
         arena: Mutex::new(vec![Node::new(root_name, NONE, 0)]),
+        file_records: Mutex::new(Vec::new()),
         files: AtomicU64::new(0),
         bytes: AtomicU64::new(0),
         allocated_reference_bytes: AtomicU64::new(0),
@@ -552,6 +603,7 @@ where
             .collect(),
         excluded_paths: options.excluded_paths,
         cancellation: options.cancellation.clone(),
+        mode: options.mode,
     });
 
     let progress = Arc::new(progress);
@@ -568,11 +620,10 @@ where
         return Err(ScanError::Cancelled);
     }
 
-    let mut nodes = Arc::try_unwrap(shared)
-        .map_err(|_| std::io::Error::other("scanner threads outlived the scan"))?
-        .arena
-        .into_inner()
-        .unwrap();
+    let shared = Arc::try_unwrap(shared)
+        .map_err(|_| std::io::Error::other("scanner threads outlived the scan"))?;
+    let mut nodes = shared.arena.into_inner().unwrap();
+    let files = shared.file_records.into_inner().unwrap();
 
     propagate(&mut nodes);
 
@@ -608,6 +659,7 @@ where
 
     Ok(Tree {
         nodes,
+        files,
         root_path: root,
         stats,
     })
@@ -655,6 +707,7 @@ fn worker<F: Fn(u64, u64, u128)>(shared: &Shared, progress: &F, started: Instant
         let mut newest = 0i64;
         let mut subdirs: Vec<(String, PathBuf)> = Vec::new();
         let mut markers: Vec<String> = Vec::new();
+        let mut file_records: Vec<FileRecord> = Vec::new();
         let mut unreadable = false;
         let mut excluded = false;
 
@@ -706,9 +759,26 @@ fn worker<F: Fn(u64, u64, u128)>(shared: &Shared, progress: &F, started: Instant
                         #[cfg(windows)]
                         let duplicate = false;
                         if !duplicate {
-                            own_size += entry_size(&entry_path, &md);
+                            let reclaimable_size = entry_size(&entry_path, &md);
+                            own_size += reclaimable_size;
                             own_allocated_reference_size += allocated_reference_size(&md);
                             own_logical_size += md.len();
+                            if shared.mode.keeps_file_inventory()
+                                && md.is_file()
+                                && !md.file_type().is_symlink()
+                            {
+                                let (volume_id, file_id, modified_ns) = file_cache_identity(&md);
+                                file_records.push(FileRecord {
+                                    parent: idx,
+                                    name: entry.file_name().to_string_lossy().into_owned(),
+                                    reclaimable_size,
+                                    logical_size: md.len(),
+                                    mtime,
+                                    volume_id,
+                                    file_id,
+                                    modified_ns,
+                                });
+                            }
                         }
                         own_files += 1;
                         if !shared.markers.is_empty() {
@@ -726,6 +796,10 @@ fn worker<F: Fn(u64, u64, u128)>(shared: &Shared, progress: &F, started: Instant
         if shared.cancellation.is_cancelled() {
             finish_task(shared, Vec::new());
             continue;
+        }
+
+        if !file_records.is_empty() {
+            shared.file_records.lock().unwrap().extend(file_records);
         }
 
         // --- publish results and enqueue children -------------------------------

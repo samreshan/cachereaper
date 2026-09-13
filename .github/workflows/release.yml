@@ -262,6 +262,12 @@ jobs:
           The Python CLI is a single file with no dependencies, and knows how to
           replace itself: `cachereaper update`.
           NOTES
+
+          {
+            printf '\n### What changed\n\n'
+            git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | sed '/^-----BEGIN/,$d'
+          } >> notes.md
+
           gh release create "$GITHUB_REF_NAME" \
             --title "cachereaper $version" \
             --notes-file notes.md \

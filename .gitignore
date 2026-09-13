@@ -9,6 +9,7 @@ venv/
 /dist/
 *.egg-info/
 .DS_Store
+.claude/
 
 # rust
 target/

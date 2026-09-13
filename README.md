@@ -22,6 +22,11 @@
 Reclaim disk space from caches and build artifacts, with a risk tier on every
 finding and guards that make it hard to delete something you wanted.
 
+**Version 2.0** adds explicit whole-disk and all-files inspection, locally proven
+duplicates, recoverable personal-file actions, snapshot trends, typed Ask and
+Plan workspaces, and bounded storage intelligence. Read the complete
+[2.0 release notes](RELEASE_NOTES.md).
+
 **Nothing is deleted without a rule**, and every rule carries a tier and a
 "here's how you get it back" note. **Build artifacts must prove what they are** —
 a `target/` is only a Rust build if `Cargo.toml` sits beside it; ambiguous names
@@ -132,6 +137,124 @@ points you back at pip instead.
 
 A treemap with the risk tiers painted on top. GrandPerspective shows you what is
 big; cachereaper shows you what is big **and** safe to delete.
+
+### Scan modes
+
+The v2 scanner separates three levels of inspection so a storage overview does
+not silently become a content scan:
+
+| mode | reads | produces |
+| --- | --- | --- |
+| **Cache** | directory metadata and rule markers | known caches and build artifacts; the fast default |
+| **Whole Disk** | file metadata, never contents | category totals, largest files, old large files, and the treemap |
+| **All Files** | Whole Disk metadata plus candidate contents | locally proven exact duplicate groups using a partial filter followed by full SHA-256 hashes |
+
+Whole Disk insights are read-only. Personal files are never sent through the
+cache deletion path. In All Files mode, one member of a fully verified duplicate
+group can be moved through macOS's native Trash API (the default) or into a
+same-volume CacheReaper quarantine vault. If native Trash is unavailable, an
+explicitly confirmed action falls back to quarantine instead of deleting the
+file directly. Cache Scan retains no file-level inventory.
+
+Both personal-file actions are authorized only by the newest completed All Files
+scan. CacheReaper rehashes the selected file and requires another unchanged copy,
+then durably records its intent before asking the filesystem to move anything.
+Native Trash remains recoverable through Finder; quarantine remains recoverable
+inside CacheReaper and does not free space until a separately confirmed expiry.
+
+Quarantine is authorized only by the newest completed All Files scan. CacheReaper
+rehashes the selected file and requires another unchanged copy before moving it
+atomically into `<scan root>/.cachereaper-quarantine`. It first persists an
+append-only manifest under `~/.cachereaper/quarantine-*.jsonl`, invalidates the
+scan evidence after a move, never overwrites an occupied restore path, and can
+recover a move interrupted between its planned and completed manifest events.
+
+Quarantine retention defaults to 30 days and can be changed to 7, 30, 90, 365,
+or **Never**. Nothing expires automatically: after the deadline, the history UI
+can expose a permanent-expiry action that requires typing an item-specific phrase.
+Immediately before deletion, CacheReaper rehashes the quarantined file and
+requires an unchanged peer captured from the original duplicate group. Legacy
+records without that evidence remain restorable but cannot be expired.
+
+The Action History sheet projects cleanup receipts, quarantine manifests, and
+native Trash transaction events into one chronological audit view. Interrupted
+moves are never presented as successful: they become an explicit
+`recovery-required` state with the correct recovery location.
+
+Completed Cache, Whole Disk, and All Files scans also publish immutable local
+summaries under `~/.cachereaper/index/`. A later scan shows allocated, logical,
+file-count, category, and directory growth against the latest snapshot for the
+same root, filesystem identity, and mode. Only the newest 20 snapshots per
+root/mode are retained.
+
+Deep Scan caches partial and complete SHA-256 results by filesystem identity,
+logical size, and high-resolution modification time. Unchanged candidates avoid
+being read again; mutations get a new key and are rehashed. The cache is bounded
+and age-pruned. A corrupt or newer hash-index schema produces a visible warning
+and is rebuilt; unreadable snapshot records are ignored. Neither can block
+startup or become action authority. Cross-platform
+filesystem notifications invalidate duplicate evidence and reveal a snapshot
+refresh control whenever the scanned root changes.
+
+The **Ask** workspace compiles a deliberately small natural-language grammar
+into a visible typed filter over the current evidence. It accepts size, age,
+category, path, risk, insight kind, recovery method, and provenance clauses;
+unknown grammar and command-like input fail closed. The **Plan** workspace turns
+a target size and Safest, Balanced, Maximum, or Fastest Recovery policy into a
+deterministic, snapshot-bound review plan. Plans never execute themselves,
+never add paths, and distinguish immediately reclaimable cache space from space
+that remains occupied until system Trash is emptied. Protected reference roots
+are excluded from duplicate actions.
+
+Optional local-model support is compiled with the `local-ai` Cargo feature. Its
+adapter can return only bounded rankings and explanations for existing insight
+IDs. Strict JSON validation rejects unknown fields, paths, action requests,
+unknown IDs, duplicate IDs, malformed output, and oversized text. The model is
+presentation-only: typed scanner and rule evidence remains the sole authority
+for every permitted action, and deterministic explanations work without a
+model.
+
+### Advanced local intelligence (M6)
+
+All Files scans now add bounded, local similar-media analysis. Images use a
+decoded perceptual difference hash; video and audio use eight evenly spaced,
+streamed samples. Results expose an algorithm and minimum similarity score, are
+clearly labelled **review only**, and never inherit the exact-duplicate Trash or
+quarantine actions. The analyzer considers at most 256 candidates and 64 groups
+per media kind, rejects files over 512 MB, caps decoded images at 40 megapixels
+and 192 MB of decoder allocation, and discards partial groups after cancellation.
+
+Whole Disk and All Files scans compare top-level application cache/data owners
+with a bounded local catalogue of installed apps. A match is evidence of current
+ownership; a miss is only a **possible leftover** because portable and custom
+installs may not appear in the catalogue. These hints are reveal-only and never
+authorize deletion.
+
+Project manifests and lockfiles identify regenerable rule-backed artifacts for
+Rust, JavaScript, Python, JVM, Swift, CocoaPods, Go, Dart, and Elixir projects.
+The estimate reports artifact bytes, rough rebuild time, and an upper-bound
+download size. It does not inspect working-tree changes, and source files plus
+repository metadata remain outside the action model.
+
+Once a root and scan mode have at least two local snapshots spanning an hour,
+CacheReaper derives a robust median growth rate and an estimated date for the
+volume to reach 10% free space. With three or more snapshots it also flags large
+category or directory jumps against the prior median. Forecasts and anomalies
+are explanatory evidence, not cleanup authority.
+
+The `offload-connectors` Cargo feature exposes a provider-neutral connector
+contract. Builds configure no cloud provider by default and perform no upload.
+Before any future provider receives an item, the core creates a tamper-evident
+disclosure naming the selected files, destination, estimated bytes, and data
+leaving the device, then requires its exact confirmation phrase. Connector
+receipts are schema-checked and cannot create local deletion actions.
+
+Folders designated as **immutable reference roots** remain in scans and can act
+as master copies when proving duplicates. CacheReaper blocks cache deletion,
+quarantine, restore, and deletion of any ancestor folder that would modify a
+reference root. These boundaries are shared by the desktop app and CLI; ignoring
+saved scan exclusions never disables them. Manage them under **Profiles,
+Reference Roots & Exclusions**.
 
 It opens by asking what to look at rather than walking your disk uninvited, and
 holds the window with a live count while it scans. **Scan folder…** repoints it

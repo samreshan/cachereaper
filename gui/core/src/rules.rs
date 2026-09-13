@@ -631,14 +631,9 @@ mod tests {
         ));
         std::fs::create_dir_all(root.join("node_modules/package")).unwrap();
         std::fs::write(root.join("node_modules/package/blob"), vec![1u8; 8192]).unwrap();
-        let tree = crate::scan::scan_with_markers(
-            &root,
-            2,
-            marker_vocabulary(),
-            Vec::new(),
-            |_, _| {},
-        )
-        .unwrap();
+        let tree =
+            crate::scan::scan_with_markers(&root, 2, marker_vocabulary(), Vec::new(), |_, _| {})
+                .unwrap();
         assert!(tree.root().total_size > 0);
         let excluded = ["node-modules".to_string()].into_iter().collect();
         assert!(all_findings_excluding(&tree, false, &excluded).is_empty());

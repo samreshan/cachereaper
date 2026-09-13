@@ -315,8 +315,16 @@ mod tests {
     fn every_gate_lives_inside_home_and_resolves_by_id() {
         let home = home();
         for listed in gates() {
-            assert!(is_within(&listed.path, &home), "{:?} escaped $HOME", listed.path);
-            assert!(!listed.service.is_empty(), "{} has no TCC service", listed.id);
+            assert!(
+                is_within(&listed.path, &home),
+                "{:?} escaped $HOME",
+                listed.path
+            );
+            assert!(
+                !listed.service.is_empty(),
+                "{} has no TCC service",
+                listed.id
+            );
             let found = gate(&listed.id).expect("a listed gate must resolve by id");
             assert_eq!(found.path, listed.path);
         }
@@ -349,7 +357,10 @@ mod tests {
             SettingsPane::from_id("files"),
             Some(SettingsPane::FilesAndFolders)
         );
-        assert_eq!(SettingsPane::from_id("full-disk"), Some(SettingsPane::FullDisk));
+        assert_eq!(
+            SettingsPane::from_id("full-disk"),
+            Some(SettingsPane::FullDisk)
+        );
         assert!(SettingsPane::from_id("anything-else").is_none());
         assert!(SettingsPane::from_id("").is_none());
     }

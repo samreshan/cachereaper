@@ -22,6 +22,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod trash;
+mod watcher;
+
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -30,8 +33,16 @@ use cachereaper_core::config::{self, Config, ScanProfile};
 use cachereaper_core::guard::{home, is_within, Target};
 use cachereaper_core::rules::{all_findings_excluding, marker_vocabulary};
 use cachereaper_core::{
-    allowed_roots, clear_history, delete_receipt, purge, read_history, scan_with_options_progress,
-    CancellationToken, PurgeResult, Receipt, ScanError, ScanOptions, NONE,
+    action_history, allowed_roots, analyze_ownership, analyze_projects, analyze_similar_media,
+    analyze_with_cache, append_advanced_insights, build_insights, clear_history, compile_filter,
+    delete_receipt, expire_quarantine, filter_insights, forecast_snapshots, generate_cleanup_plan,
+    list_quarantine, list_snapshots, persist_snapshot, purge, quarantine_file, read_history,
+    restore_quarantine, scan_with_options_progress, trash_duplicate_with, ActionHistoryEntry,
+    AnalysisSummary, ApplicationCatalog, CancellationToken, CleanupPlan, DuplicateGroup,
+    ExpiryRequest, FilterAst, GrowthReport, HashCache, Insight, IntelligenceSummary, LocalAiStatus,
+    MediaAnalysis, OffloadStatus, PlanPolicy, PurgeResult, QuarantineEvidence, QuarantineRecord,
+    Receipt, ScanError, ScanMode, ScanOptions, ScanSnapshot, TrashRecord, NONE, PROJECT_MARKERS,
+    SCAN_SCHEMA, VAULT_NAME,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -54,11 +65,27 @@ struct Session {
     config: Mutex<Config>,
     pending_update: Mutex<Option<Update>>,
     active_scan: Mutex<Option<ActiveScan>>,
+    duplicate_evidence: Mutex<Option<DuplicateEvidenceSnapshot>>,
+    insight_snapshot: Mutex<Option<InsightSnapshot>>,
+    change_watcher: Mutex<Option<watcher::ChangeWatcher>>,
 }
 
 struct ActiveScan {
     id: String,
     cancellation: CancellationToken,
+}
+
+#[derive(Clone)]
+struct DuplicateEvidenceSnapshot {
+    scan_id: String,
+    root: PathBuf,
+    groups: Vec<DuplicateGroup>,
+}
+
+#[derive(Clone)]
+struct InsightSnapshot {
+    scan_id: String,
+    insights: Vec<Insight>,
 }
 
 impl Session {
@@ -68,6 +95,9 @@ impl Session {
             config: Mutex::new(config::load()),
             pending_update: Mutex::new(None),
             active_scan: Mutex::new(None),
+            duplicate_evidence: Mutex::new(None),
+            insight_snapshot: Mutex::new(None),
+            change_watcher: Mutex::new(None),
         }
     }
 }
@@ -127,11 +157,21 @@ struct Stats {
 
 #[derive(Serialize)]
 struct ScanPayload {
+    schema: u16,
     scan_id: String,
+    mode: ScanMode,
     root_path: String,
     home_path: String,
     stats: Stats,
     findings: Vec<FindingPayload>,
+    analysis: AnalysisSummary,
+    media: MediaAnalysis,
+    intelligence: IntelligenceSummary,
+    offload: OffloadStatus,
+    insights: Vec<Insight>,
+    growth: Option<GrowthReport>,
+    snapshot_saved: bool,
+    change_monitoring: bool,
     nodes: Vec<NodePayload>,
 }
 
@@ -151,14 +191,25 @@ struct FindingPayload {
 #[derive(Serialize, Clone)]
 struct Progress {
     scan_id: String,
+    phase: String,
     files: u64,
     reclaimable_bytes: u64,
     elapsed_ms: u64,
 }
 
+#[derive(Clone, Serialize)]
+struct ChangeNotice {
+    root: String,
+    reason: String,
+}
+
 #[derive(Deserialize)]
 struct ScanRequest {
+    #[serde(default)]
+    schema: Option<u16>,
     scan_id: String,
+    #[serde(default)]
+    mode: ScanMode,
     root: Option<String>,
     profile_id: Option<String>,
     #[serde(default)]
@@ -178,6 +229,45 @@ struct TargetInput {
     label: String,
     #[serde(default)]
     regen: String,
+}
+
+#[derive(Deserialize)]
+struct QuarantineInput {
+    scan_id: String,
+    hash: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct InsightQueryInput {
+    scan_id: String,
+    query: String,
+}
+
+#[derive(Serialize)]
+struct InsightQueryResult {
+    ast: FilterAst,
+    matches: Vec<Insight>,
+}
+
+#[derive(Deserialize)]
+struct CleanupPlanInput {
+    scan_id: String,
+    target_bytes: u64,
+    policy: PlanPolicy,
+    query: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
+enum TrashActionResult {
+    Trash {
+        record: TrashRecord,
+    },
+    Quarantine {
+        record: QuarantineRecord,
+        trash_error: String,
+    },
 }
 
 /// One row of the access step.
@@ -208,6 +298,12 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
     if request.root.is_some() && request.profile_id.is_some() {
         return Err("provide either root or profile_id, never both".to_string());
     }
+    if request.schema.is_some_and(|schema| schema != SCAN_SCHEMA) {
+        return Err(format!(
+            "unsupported scan schema {}; this build supports {SCAN_SCHEMA}",
+            request.schema.unwrap()
+        ));
+    }
     let session = app
         .try_state::<Session>()
         .ok_or_else(|| "no session".to_string())?;
@@ -237,6 +333,12 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
         return Err("scan root must be absolute".to_string());
     }
     let root = config::normalize_absolute(&root)?;
+    if root
+        .components()
+        .any(|component| component.as_os_str() == VAULT_NAME)
+    {
+        return Err("the quarantine vault cannot be used as a scan root".to_string());
+    }
     excluded_paths.extend(config.global_excluded_paths);
     excluded_rules.extend(config.global_excluded_rules);
     for path in request.excluded_paths {
@@ -246,6 +348,9 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
         .into_iter()
         .map(|path| config::normalize_absolute(&path))
         .collect::<Result<Vec<_>, _>>()?;
+    // The vault is an explicit protected boundary. It is visible in scan health
+    // but is never opened or allowed to become another cleanup candidate.
+    excluded_paths.push(root.join(VAULT_NAME));
     excluded_rules.extend(request.excluded_rules);
 
     let cancellation = CancellationToken::new();
@@ -264,39 +369,104 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
             cancellation: cancellation.clone(),
         });
     }
-
     let security_skips: Vec<PathBuf> = access::gates()
         .into_iter()
         .filter(|gate| remembered(&app, &gate.id) != AccessState::Granted)
         .map(|gate| gate.path)
         .collect();
     let scan_id = request.scan_id.clone();
+    let scan_mode = request.mode;
     let progress_id = scan_id.clone();
+    let snapshot_scan_id = scan_id.clone();
     let handle = app.clone();
     let scan_root = root.clone();
+    let analysis_cancellation = cancellation.clone();
     let joined = tauri::async_runtime::spawn_blocking(move || {
         let last = std::sync::atomic::AtomicU64::new(0);
+        let walking_handle = handle.clone();
+        let walking_id = progress_id.clone();
+        let mut markers = marker_vocabulary();
+        markers.extend(PROJECT_MARKERS.iter().map(|marker| marker.to_string()));
         let options = ScanOptions {
-            markers: marker_vocabulary(),
+            markers,
             security_skips,
             excluded_paths,
+            mode: scan_mode,
             cancellation,
             ..ScanOptions::default()
         };
-        scan_with_options_progress(&scan_root, options, move |files, bytes, elapsed| {
-            let bucket = files / 20_000;
-            if bucket > last.swap(bucket, std::sync::atomic::Ordering::Relaxed) {
-                let _ = handle.emit(
-                    "scan-progress",
-                    Progress {
-                        scan_id: progress_id.clone(),
-                        files,
-                        reclaimable_bytes: bytes,
-                        elapsed_ms: elapsed as u64,
-                    },
-                );
+        let tree =
+            scan_with_options_progress(&scan_root, options, move |files, bytes, elapsed| {
+                let bucket = files / 20_000;
+                if bucket > last.swap(bucket, std::sync::atomic::Ordering::Relaxed) {
+                    let _ = walking_handle.emit(
+                        "scan-progress",
+                        Progress {
+                            scan_id: walking_id.clone(),
+                            phase: "walking".to_string(),
+                            files,
+                            reclaimable_bytes: bytes,
+                            elapsed_ms: elapsed as u64,
+                        },
+                    );
+                }
+            })?;
+        let _ = handle.emit(
+            "scan-progress",
+            Progress {
+                scan_id: progress_id,
+                phase: if scan_mode.reads_file_contents() {
+                    "hashing".to_string()
+                } else {
+                    "summarizing".to_string()
+                },
+                files: tree.stats.files,
+                reclaimable_bytes: tree.stats.reclaimable_bytes,
+                elapsed_ms: tree.stats.elapsed_ms as u64,
+            },
+        );
+        let mut hash_cache = HashCache::load();
+        let index_warning = hash_cache.warning().map(str::to_string);
+        let mut analysis =
+            analyze_with_cache(&tree, scan_mode, &analysis_cancellation, &mut hash_cache);
+        if scan_mode == ScanMode::All {
+            let _ = handle.emit(
+                "scan-progress",
+                Progress {
+                    scan_id: snapshot_scan_id.clone(),
+                    phase: "similar-media".to_string(),
+                    files: tree.stats.files,
+                    reclaimable_bytes: tree.stats.reclaimable_bytes,
+                    elapsed_ms: tree.stats.elapsed_ms as u64,
+                },
+            );
+        }
+        let media = analyze_similar_media(&tree, scan_mode, &analysis_cancellation);
+        if analysis_cancellation.is_cancelled() {
+            Err(ScanError::Cancelled)
+        } else {
+            if let Some(warning) = index_warning {
+                analysis.warnings.push(warning);
             }
-        })
+            if scan_mode == ScanMode::All {
+                if let Err(error) = hash_cache.save() {
+                    analysis
+                        .warnings
+                        .push(format!("hash index could not be saved: {error}"));
+                }
+            }
+            let snapshot = ScanSnapshot::from_scan(&snapshot_scan_id, &tree, &analysis);
+            let (growth, snapshot_saved) = match persist_snapshot(&snapshot) {
+                Ok(growth) => (growth, true),
+                Err(error) => {
+                    analysis
+                        .warnings
+                        .push(format!("scan snapshot could not be saved: {error}"));
+                    (None, false)
+                }
+            };
+            Ok((tree, analysis, media, growth, snapshot_saved))
+        }
     })
     .await;
     let result = match joined {
@@ -323,8 +493,8 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
     if cancelled_after_join {
         return Err("cancelled".to_string());
     }
-    let tree = match result {
-        Ok(tree) => tree,
+    let (tree, mut analysis, media, growth, snapshot_saved) = match result {
+        Ok(result) => result,
         Err(ScanError::Cancelled) => return Err("cancelled".to_string()),
         Err(error) => return Err(format!("scan failed: {error}")),
     };
@@ -336,6 +506,39 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
         }
     }
 
+    let watched_root = tree.root_path.clone();
+    let notice_root = watched_root.to_string_lossy().into_owned();
+    let watcher_app = app.clone();
+    let watcher_result = watcher::ChangeWatcher::start(&watched_root, move || {
+        if let Some(session) = watcher_app.try_state::<Session>() {
+            *session.duplicate_evidence.lock().unwrap() = None;
+            *session.insight_snapshot.lock().unwrap() = None;
+        }
+        let _ = watcher_app.emit(
+            "scan-root-changed",
+            ChangeNotice {
+                root: notice_root.clone(),
+                reason: "filesystem-change".to_string(),
+            },
+        );
+    });
+    let change_monitoring = watcher_result.is_ok();
+    match watcher_result {
+        Ok(watcher) => *session.change_watcher.lock().unwrap() = Some(watcher),
+        Err(error) => {
+            *session.change_watcher.lock().unwrap() = None;
+            analysis
+                .warnings
+                .push(format!("live refresh unavailable: {error}"));
+        }
+    }
+    // Publish action evidence only after replacing the previous watcher. That
+    // prevents a late event from the old snapshot invalidating the new one.
+    *session.duplicate_evidence.lock().unwrap() = Some(DuplicateEvidenceSnapshot {
+        scan_id: scan_id.clone(),
+        root: tree.root_path.clone(),
+        groups: analysis.duplicate_groups.clone(),
+    });
     let excluded_rules: std::collections::HashSet<String> = excluded_rules.into_iter().collect();
     let findings = all_findings_excluding(&tree, false, &excluded_rules);
     let by_node: std::collections::HashMap<u32, &cachereaper_core::Finding> =
@@ -390,9 +593,48 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
     let (volume_capacity, volume_free) = volume_stats(&tree.root_path)
         .map(|(capacity, free)| (Some(capacity), Some(free)))
         .unwrap_or((None, None));
+    let catalog = installed_application_catalog();
+    let ownership = if scan_mode == ScanMode::Cache {
+        Vec::new()
+    } else {
+        analyze_ownership(&tree, &catalog)
+    };
+    let projects = analyze_projects(&tree, &findings);
+    let forecast = match list_snapshots() {
+        Ok(snapshots) => forecast_snapshots(
+            &snapshots,
+            &tree.root_path.to_string_lossy(),
+            scan_mode,
+            volume_capacity,
+            volume_free,
+        ),
+        Err(error) => {
+            analysis
+                .warnings
+                .push(format!("forecast history could not be read: {error}"));
+            None
+        }
+    };
+    let intelligence = IntelligenceSummary {
+        schema: cachereaper_core::INTELLIGENCE_SCHEMA,
+        ownership,
+        projects,
+        forecast,
+    };
+    let mut insights = build_insights(&findings, &analysis);
+    append_advanced_insights(&mut insights, &media, &intelligence);
+    *session.insight_snapshot.lock().unwrap() = Some(InsightSnapshot {
+        scan_id: scan_id.clone(),
+        insights: insights.clone(),
+    });
+    if let Some(watcher) = session.change_watcher.lock().unwrap().as_ref() {
+        watcher.arm();
+    }
 
     Ok(ScanPayload {
+        schema: SCAN_SCHEMA,
         scan_id,
+        mode: scan_mode,
         root_path: tree.root_path.to_string_lossy().into_owned(),
         home_path: home().to_string_lossy().into_owned(),
         stats: Stats {
@@ -422,6 +664,14 @@ async fn scan_request(app: tauri::AppHandle, request: ScanRequest) -> Result<Sca
             volume_free,
         },
         findings: finding_payload,
+        analysis,
+        media,
+        intelligence,
+        offload: OffloadStatus::current(),
+        insights,
+        growth,
+        snapshot_saved,
+        change_monitoring,
         nodes,
     })
 }
@@ -440,6 +690,147 @@ fn cancel_scan(app: tauri::AppHandle, scan_id: String) -> bool {
                 })
         })
         .unwrap_or(false)
+}
+
+/// Compile a query into the closed filter AST and apply it to the current
+/// immutable evidence snapshot. Query text is never executed or opened.
+#[tauri::command]
+fn insight_query(
+    app: tauri::AppHandle,
+    input: InsightQueryInput,
+) -> Result<InsightQueryResult, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let snapshot = session
+        .insight_snapshot
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "insight evidence is no longer current; scan again".to_string())?;
+    if snapshot.scan_id != input.scan_id {
+        return Err("insight evidence is stale; scan again".to_string());
+    }
+    let ast = compile_filter(&input.query).map_err(|error| error.to_string())?;
+    let matches = filter_insights(
+        &snapshot.insights,
+        &ast,
+        cachereaper_core::insights::unix_seconds(),
+    )
+    .into_iter()
+    .cloned()
+    .collect();
+    Ok(InsightQueryResult { ast, matches })
+}
+
+/// Generate a deterministic review plan from the current typed evidence. The
+/// optional query is recompiled here, so the webview cannot submit its own AST
+/// or add paths/actions.
+#[tauri::command]
+fn cleanup_plan(app: tauri::AppHandle, input: CleanupPlanInput) -> Result<CleanupPlan, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let snapshot = session
+        .insight_snapshot
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "insight evidence is no longer current; scan again".to_string())?;
+    if snapshot.scan_id != input.scan_id {
+        return Err("insight evidence is stale; scan again".to_string());
+    }
+    let selected: Vec<Insight> =
+        if let Some(query) = input.query.filter(|query| !query.trim().is_empty()) {
+            let ast = compile_filter(&query).map_err(|error| error.to_string())?;
+            filter_insights(
+                &snapshot.insights,
+                &ast,
+                cachereaper_core::insights::unix_seconds(),
+            )
+            .into_iter()
+            .cloned()
+            .collect()
+        } else {
+            snapshot.insights.clone()
+        };
+    let protected_roots = session.config.lock().unwrap().reference_roots.clone();
+    Ok(generate_cleanup_plan(
+        &snapshot.scan_id,
+        input.target_bytes,
+        input.policy,
+        &selected,
+        &protected_roots,
+    ))
+}
+
+#[tauri::command]
+fn local_ai_status() -> LocalAiStatus {
+    LocalAiStatus::current()
+}
+
+#[tauri::command]
+fn offload_status() -> OffloadStatus {
+    OffloadStatus::current()
+}
+
+fn installed_application_catalog() -> ApplicationCatalog {
+    let mut identifiers = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        for root in [
+            PathBuf::from("/Applications"),
+            PathBuf::from("/System/Applications"),
+            home().join("Applications"),
+        ] {
+            collect_application_names(&root, Some("app"), &mut identifiers);
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Some(root) = std::env::var_os(variable) {
+                collect_application_names(std::path::Path::new(&root), None, &mut identifiers);
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        for root in [
+            PathBuf::from("/usr/share/applications"),
+            PathBuf::from("/usr/local/share/applications"),
+            home().join(".local/share/applications"),
+        ] {
+            collect_application_names(&root, Some("desktop"), &mut identifiers);
+        }
+    }
+    // Application directories, portable apps, and package-manager installs
+    // can always live elsewhere, so absence remains "possible leftover".
+    ApplicationCatalog::from_identifiers(identifiers, false)
+}
+
+fn collect_application_names(
+    root: &std::path::Path,
+    suffix: Option<&str>,
+    output: &mut Vec<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten().take(10_000) {
+        let path = entry.path();
+        if suffix.is_some_and(|suffix| {
+            !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case(suffix))
+        }) {
+            continue;
+        }
+        if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
+            output.push(name.to_string());
+        }
+    }
 }
 
 fn volume_stats(path: &std::path::Path) -> Option<(u64, u64)> {
@@ -495,11 +886,12 @@ fn delete_targets(
     targets: Vec<TargetInput>,
     dry_run: Option<bool>,
 ) -> Result<PurgeResult, String> {
-    let extra = app
+    let session = app
         .try_state::<Session>()
-        .map(|s| s.scanned_roots.lock().unwrap().clone())
-        .unwrap_or_default();
+        .ok_or_else(|| "no session; refusing deletion".to_string())?;
+    let extra = session.scanned_roots.lock().unwrap().clone();
     let allowed = allowed_roots(&extra);
+    let reference_roots = session.config.lock().unwrap().reference_roots.clone();
 
     let targets: Vec<Target> = targets
         .into_iter()
@@ -515,7 +907,187 @@ fn delete_targets(
         .collect();
 
     // Every target is re-validated inside purge(); nothing here can bypass it.
-    Ok(purge(&targets, &allowed, dry_run.unwrap_or(false)))
+    let result = purge(
+        &targets,
+        &allowed,
+        &reference_roots,
+        dry_run.unwrap_or(false),
+    );
+    if result.removed > 0 && !dry_run.unwrap_or(false) {
+        *session.duplicate_evidence.lock().unwrap() = None;
+        *session.insight_snapshot.lock().unwrap() = None;
+    }
+    Ok(result)
+}
+
+/// Move one exact-duplicate member into a recoverable same-volume vault.
+/// Authorization comes exclusively from the newest completed All Files scan;
+/// the webview cannot supply peers, sizes, or a scan root of its own choosing.
+#[tauri::command]
+fn quarantine_duplicate(
+    app: tauri::AppHandle,
+    input: QuarantineInput,
+) -> Result<QuarantineRecord, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let evidence = session
+        .duplicate_evidence
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "deep-scan evidence is no longer current; scan again".to_string())?;
+    if evidence.scan_id != input.scan_id {
+        return Err("deep-scan evidence is stale; scan again".to_string());
+    }
+    let group = evidence
+        .groups
+        .iter()
+        .find(|group| group.hash == input.hash)
+        .ok_or_else(|| "duplicate group is not part of the current scan".to_string())?;
+    let target = group
+        .files
+        .iter()
+        .find(|file| file.path == input.path)
+        .ok_or_else(|| "file is not part of the current duplicate group".to_string())?;
+    let peers: Vec<PathBuf> = group
+        .files
+        .iter()
+        .filter(|file| file.path != input.path)
+        .map(|file| PathBuf::from(&file.path))
+        .collect();
+    let extra = session.scanned_roots.lock().unwrap().clone();
+    let allowed = allowed_roots(&extra);
+    let reference_roots = session.config.lock().unwrap().reference_roots.clone();
+    let result = quarantine_file(
+        std::path::Path::new(&target.path),
+        QuarantineEvidence {
+            scan_root: &evidence.root,
+            allowed_roots: &allowed,
+            reference_roots: &reference_roots,
+            expected_hash: &group.hash,
+            expected_size: target.logical_size,
+            peers: &peers,
+        },
+    )?;
+    // Any filesystem mutation invalidates every path/hash assertion in the
+    // snapshot. The UI rescans before another quarantine can be requested.
+    *session.duplicate_evidence.lock().unwrap() = None;
+    *session.insight_snapshot.lock().unwrap() = None;
+    Ok(result)
+}
+
+/// Move one evidence-bound exact duplicate through the operating system's
+/// native Trash API. If that API is unavailable, the caller may explicitly
+/// request the same-volume CacheReaper quarantine as a recoverable fallback.
+#[tauri::command]
+fn trash_duplicate(
+    app: tauri::AppHandle,
+    input: QuarantineInput,
+    fallback_to_quarantine: Option<bool>,
+) -> Result<TrashActionResult, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let snapshot = session
+        .duplicate_evidence
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "deep-scan evidence is no longer current; scan again".to_string())?;
+    if snapshot.scan_id != input.scan_id {
+        return Err("deep-scan evidence is stale; scan again".to_string());
+    }
+    let group = snapshot
+        .groups
+        .iter()
+        .find(|group| group.hash == input.hash)
+        .ok_or_else(|| "duplicate group is not part of the current scan".to_string())?;
+    let target = group
+        .files
+        .iter()
+        .find(|file| file.path == input.path)
+        .ok_or_else(|| "file is not part of the current duplicate group".to_string())?;
+    let peers: Vec<PathBuf> = group
+        .files
+        .iter()
+        .filter(|file| file.path != input.path)
+        .map(|file| PathBuf::from(&file.path))
+        .collect();
+    let extra = session.scanned_roots.lock().unwrap().clone();
+    let allowed = allowed_roots(&extra);
+    let reference_roots = session.config.lock().unwrap().reference_roots.clone();
+    let evidence = QuarantineEvidence {
+        scan_root: &snapshot.root,
+        allowed_roots: &allowed,
+        reference_roots: &reference_roots,
+        expected_hash: &group.hash,
+        expected_size: target.logical_size,
+        peers: &peers,
+    };
+    let result = match trash_duplicate_with(
+        std::path::Path::new(&target.path),
+        evidence,
+        trash::move_to_trash,
+    ) {
+        Ok(record) => TrashActionResult::Trash { record },
+        Err(trash_error) if fallback_to_quarantine.unwrap_or(false) => {
+            let record = quarantine_file(std::path::Path::new(&target.path), evidence)
+                .map_err(|fallback_error| {
+                    format!("Trash failed ({trash_error}); quarantine fallback also failed: {fallback_error}")
+                })?;
+            TrashActionResult::Quarantine {
+                record,
+                trash_error,
+            }
+        }
+        Err(error) => return Err(error),
+    };
+    *session.duplicate_evidence.lock().unwrap() = None;
+    *session.insight_snapshot.lock().unwrap() = None;
+    Ok(result)
+}
+
+#[tauri::command]
+fn quarantine_history() -> Result<Vec<QuarantineRecord>, String> {
+    list_quarantine()
+}
+
+#[tauri::command]
+fn quarantine_restore(app: tauri::AppHandle, id: String) -> Result<QuarantineRecord, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let extra = session.scanned_roots.lock().unwrap().clone();
+    let allowed = allowed_roots(&extra);
+    let reference_roots = session.config.lock().unwrap().reference_roots.clone();
+    restore_quarantine(&id, &allowed, &reference_roots)
+}
+
+#[tauri::command]
+fn quarantine_expire(
+    app: tauri::AppHandle,
+    id: String,
+    confirmation: String,
+) -> Result<QuarantineRecord, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let extra = session.scanned_roots.lock().unwrap().clone();
+    let allowed = allowed_roots(&extra);
+    let config = session.config.lock().unwrap().clone();
+    let result = expire_quarantine(
+        &id,
+        ExpiryRequest {
+            allowed_roots: &allowed,
+            reference_roots: &config.reference_roots,
+            retention_days: config.quarantine_retention_days,
+            confirmation: &confirmation,
+        },
+    )?;
+    *session.duplicate_evidence.lock().unwrap() = None;
+    *session.insight_snapshot.lock().unwrap() = None;
+    Ok(result)
 }
 
 /// Open the native folder chooser and return what the user picked.
@@ -670,6 +1242,19 @@ fn config_get(app: tauri::AppHandle) -> Config {
 }
 
 #[tauri::command]
+fn quarantine_retention_set(app: tauri::AppHandle, days: Option<u32>) -> Result<Config, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let mut saved = session.config.lock().unwrap();
+    let mut candidate = saved.clone();
+    candidate.set_quarantine_retention(days)?;
+    config::save(&candidate).map_err(|error| error.to_string())?;
+    *saved = candidate.clone();
+    Ok(candidate)
+}
+
+#[tauri::command]
 fn profile_list(app: tauri::AppHandle) -> Vec<ScanProfile> {
     app.try_state::<Session>()
         .map(|session| session.config.lock().unwrap().profiles.clone())
@@ -780,6 +1365,48 @@ fn exclusion_remove_path(
 }
 
 #[tauri::command]
+fn reference_add(app: tauri::AppHandle, path: String) -> Result<Config, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let path = config::normalize_absolute(std::path::Path::new(&path))?;
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|error| format!("reference root is not available: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("reference root must be a real directory".to_string());
+    }
+    let result = {
+        let mut saved = session.config.lock().unwrap();
+        let mut candidate = saved.clone();
+        candidate.add_reference_root(path)?;
+        config::save(&candidate).map_err(|error| error.to_string())?;
+        *saved = candidate.clone();
+        candidate
+    };
+    *session.duplicate_evidence.lock().unwrap() = None;
+    *session.insight_snapshot.lock().unwrap() = None;
+    Ok(result)
+}
+
+#[tauri::command]
+fn reference_remove(app: tauri::AppHandle, path: String) -> Result<Config, String> {
+    let session = app
+        .try_state::<Session>()
+        .ok_or_else(|| "no session".to_string())?;
+    let result = {
+        let mut saved = session.config.lock().unwrap();
+        let mut candidate = saved.clone();
+        candidate.remove_reference_root(std::path::Path::new(&path))?;
+        config::save(&candidate).map_err(|error| error.to_string())?;
+        *saved = candidate.clone();
+        candidate
+    };
+    *session.duplicate_evidence.lock().unwrap() = None;
+    *session.insight_snapshot.lock().unwrap() = None;
+    Ok(result)
+}
+
+#[tauri::command]
 fn exclusion_add_rule(
     app: tauri::AppHandle,
     rule_id: String,
@@ -837,6 +1464,16 @@ fn exclusion_remove_rule(
 #[tauri::command]
 fn history_list() -> Result<Vec<Receipt>, String> {
     read_history().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn action_history_list() -> Result<Vec<ActionHistoryEntry>, String> {
+    action_history()
+}
+
+#[tauri::command]
+fn snapshot_history() -> Result<Vec<ScanSnapshot>, String> {
+    list_snapshots()
 }
 
 #[tauri::command]
@@ -1140,8 +1777,17 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             scan_request,
             cancel_scan,
+            insight_query,
+            cleanup_plan,
+            local_ai_status,
+            offload_status,
             pick_folder,
             delete_targets,
+            quarantine_duplicate,
+            trash_duplicate,
+            quarantine_history,
+            quarantine_restore,
+            quarantine_expire,
             reveal,
             access_status,
             request_access,
@@ -1149,6 +1795,7 @@ fn main() {
             full_disk_status,
             open_privacy_settings,
             config_get,
+            quarantine_retention_set,
             profile_list,
             rule_ids,
             profile_create,
@@ -1156,9 +1803,13 @@ fn main() {
             profile_delete,
             exclusion_add_path,
             exclusion_remove_path,
+            reference_add,
+            reference_remove,
             exclusion_add_rule,
             exclusion_remove_rule,
             history_list,
+            action_history_list,
+            snapshot_history,
             history_detail,
             history_delete,
             history_clear,

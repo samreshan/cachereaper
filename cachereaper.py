@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "1.6.1"
+VERSION = "2.0.0"
 REPO = "samreshan/cachereaper"
 HOME = Path.home()
 LOG_DIR = HOME / ".cachereaper"
@@ -48,6 +48,7 @@ TIER_ORDER = ("low", "medium", "high")
 
 FORBIDDEN_PARTS = {
     ".git", ".hg", ".svn", ".ssh", ".gnupg", "Keychains", "CloudStorage",
+    ".cachereaper-quarantine",
     "Photos Library.photoslibrary", "Mobile Documents",
 }
 
@@ -470,7 +471,7 @@ def dir_stats(path: Path, excluded_paths=()) -> tuple[int, float, int]:
     files = 0
     try:
         st = path.lstat()
-    except OSError:
+    except (OSError, RuntimeError):
         return 0, 0.0, 0
     if not os.path.isdir(path) or path.is_symlink():
         return on_disk_size(st), st.st_mtime, 1
@@ -482,7 +483,7 @@ def dir_stats(path: Path, excluded_paths=()) -> tuple[int, float, int]:
             continue
         try:
             it = os.scandir(d)
-        except OSError:
+        except (OSError, RuntimeError):
             continue
         with it:
             for entry in it:
@@ -1099,7 +1100,28 @@ def choose(cands: list[Candidate], args):
 # deletion
 # ---------------------------------------------------------------------------
 
-def validate_for_delete(cand: Candidate, allowed_roots: list[Path]) -> str:
+def matching_reference_root(path: Path, reference_roots: list[Path]) -> Path | None:
+    """Return an immutable boundary overlapping a proposed mutation."""
+    try:
+        resolved_path = path.resolve(strict=False)
+    except OSError:
+        resolved_path = None
+    for root in reference_roots:
+        if is_within(path, root) or is_within(root, path):
+            return root
+        try:
+            resolved_root = root.resolve(strict=False)
+        except OSError:
+            continue
+        if resolved_path is not None and (
+            is_within(resolved_path, resolved_root) or is_within(resolved_root, resolved_path)
+        ):
+            return root
+    return None
+
+
+def validate_for_delete(cand: Candidate, allowed_roots: list[Path],
+                        reference_roots: list[Path] | None = None) -> str:
     p = cand.path
     if not p.is_absolute():
         return "not absolute"
@@ -1110,6 +1132,9 @@ def validate_for_delete(cand: Candidate, allowed_roots: list[Path]) -> str:
         return "name changed since scan"
     if not any(is_within(p, r) for r in allowed_roots):
         return "outside allowed roots"
+    reference = matching_reference_root(p, reference_roots or [])
+    if reference is not None:
+        return f"reference root is immutable: {reference}"
     if p.is_symlink():
         return "symlink"
     if not p.exists():
@@ -1144,7 +1169,8 @@ def _free_space(path: Path) -> int | None:
         return None
 
 
-def delete(cands: list[Candidate], dry_run: bool, allowed: list[Path]) -> tuple[int, int, list[str]]:
+def delete(cands: list[Candidate], dry_run: bool, allowed: list[Path],
+           reference_roots: list[Path] | None = None) -> tuple[int, int, list[str]]:
     global _RECEIPT_COUNTER
     freed = 0
     removed = 0
@@ -1195,7 +1221,7 @@ def delete(cands: list[Candidate], dry_run: bool, allowed: list[Path]) -> tuple[
     complete = True
     try:
         for cand in cands:
-            why = validate_for_delete(cand, allowed)
+            why = validate_for_delete(cand, allowed, reference_roots)
             if why:
                 receipt_skipped += 1
                 if why not in ("already gone",):
@@ -1281,13 +1307,19 @@ def _absolute_lexical(value: str | Path) -> Path:
 def apply_saved_scan_settings(args) -> None:
     args.saved_excluded_paths = []
     args.saved_excluded_rules = []
-    ignoring = getattr(args, "ignore_saved_exclusions", False)
-    if ignoring and not getattr(args, "profile", None):
-        return
-
     config, warning = load_saved_config()
     if warning:
         print(warning, file=sys.stderr)
+    saved_reference_roots = config.get("reference_roots", [])
+    if not isinstance(saved_reference_roots, list):
+        saved_reference_roots = []
+    args.reference_roots = [
+        _absolute_lexical(path) for path in saved_reference_roots
+        if isinstance(path, str) and Path(path).is_absolute()
+    ]
+    ignoring = getattr(args, "ignore_saved_exclusions", False)
+    if ignoring and not getattr(args, "profile", None):
+        return
     if not ignoring:
         args.saved_excluded_paths.extend(
             _absolute_lexical(path) for path in config.get("global_excluded_paths", [])
@@ -1397,7 +1429,10 @@ def cmd_clean(args) -> int:
 
     if args.dry_run:
         print(BOLD("DRY RUN - nothing will be deleted\n"))
-        freed, removed, errors = delete(cands, dry_run=True, allowed=allowed_roots_for(args))
+        freed, removed, errors = delete(
+            cands, dry_run=True, allowed=allowed_roots_for(args),
+            reference_roots=getattr(args, "reference_roots", []),
+        )
         print(f"\n  would free {BOLD(human(freed))} across {removed} paths")
         for e in errors[:10]:
             print(DIM("  " + e))
@@ -1433,7 +1468,10 @@ def cmd_clean(args) -> int:
                 return 1
 
     print()
-    freed, removed, errors = delete(cands, dry_run=False, allowed=allowed_roots_for(args))
+    freed, removed, errors = delete(
+        cands, dry_run=False, allowed=allowed_roots_for(args),
+        reference_roots=getattr(args, "reference_roots", []),
+    )
     usage = shutil.disk_usage("/")
     print()
     print(BOLD(f"  freed {human(freed)} across {removed} paths"))

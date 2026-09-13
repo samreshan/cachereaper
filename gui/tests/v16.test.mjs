@@ -3,8 +3,20 @@ import { filterSortFindings, visibleBatch } from "../dist/findings.js";
 import { diagnostics, healthWarnings, redactPath } from "../dist/health.js";
 import { receiptPresentation, signedBytes } from "../dist/receipts.js";
 import { cancelViewState, isCurrentScanEvent } from "../dist/lifecycle.js";
-import { exclusionSections } from "../dist/profiles.js";
+import { exclusionSections, referenceRootFor } from "../dist/profiles.js";
 import { human } from "../dist/treemap.js";
+import {
+  advancedMetrics,
+  analysisMetrics,
+  formatDuration,
+  MODE_DETAILS,
+  normalizeMode,
+  offloadSummary,
+  ownershipStateLabel,
+  visibleFileRows,
+} from "../dist/insights.js";
+import { expiryPresentation } from "../dist/quarantine.js";
+import { clauseLabel, planSummary, sortedInsights, targetBytes } from "../dist/planner.js";
 
 let checks = 0;
 let failures = 0;
@@ -34,11 +46,57 @@ ok(isCurrentScanEvent("new", { scan_id: "new" }) && !isCurrentScanEvent("new", {
 ok(cancelViewState(true).disabled && cancelViewState(true).label === "Stopping…", "cancel enters stopping state");
 const sections = exclusionSections({ global_excluded_rules: ["known", "future"], profiles: [] }, new Set(["known"]));
 ok(sections[0].rules[0].available && !sections[0].rules[1].available, "unknown saved rules remain visible as unavailable");
+ok(referenceRootFor("/Archive/Masters/photo.raw", ["/Archive/Masters"]) === "/Archive/Masters", "reference roots cover descendants");
+ok(referenceRootFor("/Archive", ["/Archive/Masters"]) === "/Archive/Masters", "reference roots protect ancestor deletion too");
+ok(referenceRootFor("/Archive/Masters-old/photo.raw", ["/Archive/Masters"]) === null, "reference roots do not cover sibling prefixes");
+ok(referenceRootFor("C:\\Archive\\photo.raw", ["C:\\Archive"]) === "C:\\Archive", "reference root display policy handles Windows separators");
+
+ok(normalizeMode("all") === "all" && normalizeMode("invented") === "cache", "scan modes reject unknown values safely");
+ok(MODE_DETAILS.whole.summary.includes("not read"), "whole-disk privacy promise is explicit");
+const metrics = analysisMetrics({
+  inventory_files: 4,
+  categories: [{ category: "Images" }],
+  duplicate_reclaimable_bytes: 10,
+  content_analysis_complete: true,
+  duplicate_groups: [{ files: [{}, {}] }],
+});
+ok(metrics.inventoryFiles === 4 && metrics.duplicateGroups === 1 && metrics.duplicateFiles === 2 && metrics.complete, "analysis metrics are derived without DOM state");
+ok(visibleFileRows([1, 2, 3], 2).join("") === "12", "insight result lists stay bounded");
+const advanced = advancedMetrics({
+  media: { groups: [{ files: [{}, {}] }] },
+  intelligence: {
+    ownership: [{ state: "possible-leftover" }, { state: "installed-match" }],
+    projects: [{ root: "/project" }],
+    forecast: { anomalies: [{ label: "Video" }] },
+  },
+});
+ok(advanced.similarGroups === 1 && advanced.similarFiles === 2 && advanced.possibleLeftovers === 1 && advanced.projects === 1 && advanced.anomalies === 1, "advanced insight metrics are defensive and deterministic");
+ok(formatDuration(59) === "59 sec" && formatDuration(120) === "2 min" && formatDuration(5400) === "1.5 hr", "regeneration duration stays compact");
+ok(ownershipStateLabel("possible-leftover") === "Possible leftover" && ownershipStateLabel("unknown") === "Unresolved", "ownership labels preserve uncertainty");
+ok(offloadSummary({ compiled: false }).includes("Nothing can leave") && offloadSummary({ compiled: true, configured_providers: [] }).includes("no provider"), "offload status explains the fail-closed state");
+
+const quarantined = { id: "q1", state: "quarantined", quarantined_at: 1_000, peer_paths: ["/copy"] };
+ok(!expiryPresentation(quarantined, null, 999_999).eligible, "disabled retention never exposes expiry");
+ok(!expiryPresentation(quarantined, 30, 1_000 + 29 * 86_400_000).eligible, "retention deadline is enforced in presentation");
+const expiry = expiryPresentation(quarantined, 30, 1_000 + 30 * 86_400_000);
+ok(expiry.eligible && expiry.phrase === "expire q1", "eligible expiry carries the exact confirmation phrase");
+ok(!expiryPresentation({ ...quarantined, peer_paths: [] }, 30, Number.MAX_SAFE_INTEGER).eligible, "legacy records never expose expiry");
+
+ok(targetBytes("2.5", "GB") === 2.5 * 2 ** 30 && targetBytes("nope", "GB") === 0, "planner targets validate and convert exact units");
+ok(clauseLabel({ field: "size", operator: "greater-than", value: { value: 100 } }) === "size > 100", "typed filter clauses have a readable projection");
+ok(planSummary({ target_met: true, actions: [{}], estimated_reclaimable_bytes: 10, immediate_reclaimable_bytes: 5 }, human).includes("Target met · 1 action"), "cleanup plan summary distinguishes potential and immediate space");
+ok(sortedInsights([{ id: "a", estimated_reclaimable_bytes: 1 }, { id: "b", estimated_reclaimable_bytes: 2 }])[0].id === "b", "query evidence sorts deterministically by value");
 
 const html = fs.readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
-for (const id of ["view-mode", "finding-search", "finding-table", "scan-health", "copy-diagnostics", "cancel-scan", "profile-selector", "profiles-sheet", "history-sheet", "home", "home-scan-home", "home-choose-folder", "home-update"]) {
+const app = fs.readFileSync(new URL("../dist/app.js", import.meta.url), "utf8");
+ok(app.includes('call("trash_duplicate"') && app.includes('call("action_history_list"'), "Trash and unified action history are wired to desktop commands");
+ok(html.includes("Action History") && html.includes("Clear Cleanup Receipts"), "history copy distinguishes audit and recovery records");
+ok(app.includes('listen("scan-root-changed"') && app.includes("state.payload?.growth"), "live refresh and snapshot growth are rendered");
+for (const id of ["view-mode", "finding-search", "finding-table", "insights-wrap", "insights-content", "ask-wrap", "ask-form", "ask-query", "ask-ast", "ask-results", "plan-wrap", "plan-form", "plan-target", "plan-policy", "plan-results", "local-ai-badge", "scan-mode", "home-scan-modes", "scan-health", "copy-diagnostics", "cancel-scan", "profile-selector", "profiles-sheet", "reference-roots", "reference-roots-body", "reference-add", "history-sheet", "open-quarantine", "quarantine-sheet", "quarantine-retention", "quarantine-body", "quarantine-close", "change-notice", "refresh-snapshot", "home", "home-scan-home", "home-choose-folder", "home-update"]) {
   ok(html.includes(`id="${id}"`), `required DOM id ${id}`);
 }
+ok(app.includes('call("insight_query"') && app.includes('call("cleanup_plan"') && app.includes('call("local_ai_status"') && app.includes("appendAdvancedIntelligence"), "Ask, Plan, local AI, and advanced intelligence are wired to typed desktop evidence");
+ok(app.includes("similar never means duplicate") && app.includes("possible leftover, never proof") && app.includes("Per-request consent required"), "M6 review and consent boundaries remain visible in the UI");
 
 console.log(`${checks - failures}/${checks} checks passed`);
 if (failures) process.exit(1);

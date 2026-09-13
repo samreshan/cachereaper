@@ -41,6 +41,13 @@ pub struct Config {
     pub support_prompt_disabled: bool,
     pub global_excluded_paths: Vec<PathBuf>,
     pub global_excluded_rules: Vec<String>,
+    /// User-designated master/archive folders. They remain readable during a
+    /// scan so their files can prove duplicates, but personal-file actions may
+    /// never mutate a path inside them.
+    pub reference_roots: Vec<PathBuf>,
+    /// Days before a quarantined file becomes eligible for an explicitly
+    /// confirmed permanent expiry. `None` disables expiry entirely.
+    pub quarantine_retention_days: Option<u32>,
     pub profiles: Vec<ScanProfile>,
     pub last_profile_id: Option<String>,
 }
@@ -71,6 +78,8 @@ impl Default for Config {
             support_prompt_disabled: false,
             global_excluded_paths: Vec::new(),
             global_excluded_rules: Vec::new(),
+            reference_roots: Vec::new(),
+            quarantine_retention_days: Some(30),
             profiles: Vec::new(),
             last_profile_id: None,
         }
@@ -162,6 +171,31 @@ impl Config {
         }
         push_unique_path(&mut profile.excluded_paths, path.clone());
         Ok(path)
+    }
+
+    pub fn add_reference_root(&mut self, path: PathBuf) -> Result<PathBuf, String> {
+        let path = normalize_absolute(&path)?;
+        if path.parent().is_none() {
+            return Err("the filesystem root cannot be a reference root".to_string());
+        }
+        push_unique_path(&mut self.reference_roots, path.clone());
+        Ok(path)
+    }
+
+    pub fn remove_reference_root(&mut self, path: &Path) -> Result<bool, String> {
+        let path = normalize_absolute(path)?;
+        let before = self.reference_roots.len();
+        self.reference_roots
+            .retain(|existing| !paths_equal(existing, &path));
+        Ok(before != self.reference_roots.len())
+    }
+
+    pub fn set_quarantine_retention(&mut self, days: Option<u32>) -> Result<(), String> {
+        if days.is_some_and(|value| !(1..=3650).contains(&value)) {
+            return Err("quarantine retention must be between 1 and 3650 days".to_string());
+        }
+        self.quarantine_retention_days = days;
+        Ok(())
     }
 }
 
@@ -295,15 +329,19 @@ pub fn save_to(config: &Config, path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn fixture() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "cachereaper-config-{}-{}",
+            "cachereaper-config-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -340,8 +378,10 @@ mod tests {
         let dir = fixture();
         let path = dir.join("config.json");
 
-        let mut written = Config::default();
-        written.auto_update = false;
+        let written = Config {
+            auto_update: false,
+            ..Config::default()
+        };
         save_to(&written, &path).unwrap();
 
         assert!(!load_from(&path).auto_update);
@@ -379,8 +419,10 @@ mod tests {
         let dir = fixture();
         let path = dir.join("config.json");
 
-        let mut written = Config::default();
-        written.seen_onboarding = true;
+        let mut written = Config {
+            seen_onboarding: true,
+            ..Config::default()
+        };
         written.record("desktop", AccessState::Granted);
         written.record("documents", AccessState::Denied);
         save_to(&written, &path).unwrap();
@@ -418,10 +460,46 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn reference_roots_are_normalized_unique_and_backward_compatible() {
+        let dir = fixture();
+        let root = dir.join("masters");
+        let mut config = Config::default();
+        config.add_reference_root(root.join("photos/../")).unwrap();
+        config.add_reference_root(root.clone()).unwrap();
+        assert_eq!(config.reference_roots, vec![root.clone()]);
+        assert!(config.remove_reference_root(&root).unwrap());
+        assert!(!config.remove_reference_root(&root).unwrap());
+
+        let path = dir.join("old-config.json");
+        std::fs::write(&path, r#"{"seen_onboarding": true}"#).unwrap();
+        assert!(load_from(&path).reference_roots.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn quarantine_retention_defaults_validates_and_round_trips() {
+        assert_eq!(Config::default().quarantine_retention_days, Some(30));
+        let mut config = Config::default();
+        assert!(config.set_quarantine_retention(Some(0)).is_err());
+        assert!(config.set_quarantine_retention(Some(3651)).is_err());
+        config.set_quarantine_retention(None).unwrap();
+        assert_eq!(config.quarantine_retention_days, None);
+
+        let dir = fixture();
+        let path = dir.join("config.json");
+        save_to(&config, &path).unwrap();
+        assert_eq!(load_from(&path).quarantine_retention_days, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[cfg(unix)]
     #[test]
     fn lexical_normalization_cannot_walk_above_root() {
-        assert_eq!(normalize_absolute(Path::new("/../../tmp/./cache")).unwrap(), Path::new("/tmp/cache"));
+        assert_eq!(
+            normalize_absolute(Path::new("/../../tmp/./cache")).unwrap(),
+            Path::new("/tmp/cache")
+        );
     }
 
     #[test]

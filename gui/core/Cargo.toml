@@ -1,13 +1,21 @@
 [package]
 name = "cachereaper-core"
-version = "1.6.1"
+version = "2.0.0"
 edition = "2021"
 description = "Parallel disk scanner and safety guards behind the cachereaper GUI"
 license = "MIT"
 
+[features]
+default = ["media-intelligence"]
+local-ai = []
+media-intelligence = ["dep:image"]
+offload-connectors = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"], optional = true }
 
 [lib]
 name = "cachereaper_core"

@@ -10,9 +10,20 @@
 import { squarify, human } from "./treemap.js";
 import { ageDays, filterSortFindings, visibleBatch } from "./findings.js";
 import { diagnostics, healthWarnings } from "./health.js";
-import { receiptPresentation } from "./receipts.js";
 import { cancelViewState, isCurrentScanEvent } from "./lifecycle.js";
-import { exclusionSections } from "./profiles.js";
+import { exclusionSections, referenceRootFor } from "./profiles.js";
+import {
+  advancedMetrics,
+  analysisMetrics,
+  formatDuration,
+  MODE_DETAILS,
+  normalizeMode,
+  offloadSummary,
+  ownershipStateLabel,
+  visibleFileRows,
+} from "./insights.js";
+import { expiryPresentation } from "./quarantine.js";
+import { clauseLabel, planSummary, sortedInsights, targetBytes } from "./planner.js";
 
 // Bigger minimum than feels necessary, on purpose. At 5px the map rendered
 // ~15,000 cells and read as speckle; at 10 it renders a few thousand legible
@@ -47,6 +58,7 @@ const state = {
   findings: [],
   payload: null,
   activeProfileId: null,
+  scanMode: "cache",
   view: "map",
   listPages: 1,
 };
@@ -67,6 +79,29 @@ function hideHome() {
   home.hidden = true;
   document.body.classList.remove("at-home");
 }
+
+function setScanMode(mode) {
+  state.scanMode = normalizeMode(mode);
+  document.getElementById("scan-mode").value = state.scanMode;
+  for (const card of document.querySelectorAll("[data-scan-mode]")) {
+    const on = card.dataset.scanMode === state.scanMode;
+    card.classList.toggle("on", on);
+    card.setAttribute("aria-checked", String(on));
+  }
+}
+
+for (const card of document.querySelectorAll("[data-scan-mode]")) {
+  card.onclick = () => setScanMode(card.dataset.scanMode);
+}
+
+document.getElementById("scan-mode").onchange = async (event) => {
+  const changed = normalizeMode(event.target.value);
+  if (changed === state.scanMode) return;
+  setScanMode(changed);
+  if (state.nodes.length && home.hidden && !scanning) {
+    await runScan(state.rootPath);
+  }
+};
 
 // Timestamp rather than a boolean: a drag is normally followed by a click, but
 // not always. A sticky flag would sit there and swallow the next real click.
@@ -107,10 +142,15 @@ async function load(request) {
     if (!progressBound) {
       const { listen } = window.__TAURI__.event;
       await listen("scan-progress", (e) => {
-        const { scan_id, files, reclaimable_bytes } = e.payload;
+        const { phase = "walking", files, reclaimable_bytes } = e.payload;
         if (!isCurrentScanEvent(activeScanId, e.payload)) return;
-        setStatus(`scanning… ${files.toLocaleString()} files, ${human(reclaimable_bytes)}`);
-        setScanProgress(files, reclaimable_bytes);
+        setStatus(`${phase}… ${files.toLocaleString()} files, ${human(reclaimable_bytes)}`);
+        setScanProgress(files, reclaimable_bytes, phase);
+      });
+      await listen("scan-root-changed", (e) => {
+        if (!state.payload || e.payload?.root !== state.rootPath) return;
+        document.getElementById("change-notice").hidden = false;
+        setStatus("Files changed — snapshot refresh recommended");
       });
       progressBound = true;
     }
@@ -154,7 +194,9 @@ function browserStub() {
   const pretendSupport = new URLSearchParams(location.search).has("support");
   let nextSupportAt = pretendSupport ? 0 : Math.floor(Date.now() / 1000) + 86_400;
   let supportDisabled = false;
+  let retentionDays = 30;
   const profiles = [];
+  const referenceRoots = [];
   return {
     config_get: async () => ({
       seen_onboarding: false,
@@ -162,8 +204,10 @@ function browserStub() {
       auto_update: true,
       support_prompt_at: null,
       support_prompt_disabled: false,
+      quarantine_retention_days: retentionDays,
       global_excluded_paths: [],
       global_excluded_rules: [],
+      reference_roots: [...referenceRoots],
       profiles: profiles.map((profile) => ({ ...profile })),
       last_profile_id: null,
     }),
@@ -174,11 +218,11 @@ function browserStub() {
     open_privacy_settings: async () => {},
     set_seen_onboarding: async () => {},
     reveal: async () => {},
-    app_version: async () => "1.6.1-dev",
+    app_version: async () => "2.0.0-dev",
     set_auto_update: async () => {},
     update_check: async () =>
       pretendBehind
-        ? { version: "9.9.9", current: "1.6.1-dev", notes: "A pretend release, for working on this card." }
+        ? { version: "9.9.9", current: "2.0.0-dev", notes: "A pretend release, for working on this card." }
         : null,
     update_install: async () => {
       throw new Error("installing an update needs the desktop app");
@@ -205,8 +249,22 @@ function browserStub() {
       const profile = profiles.find((value) => value.id === id); Object.assign(profile, { name, root }); return { ...profile };
     },
     profile_delete: async ({ id }) => { const index = profiles.findIndex((value) => value.id === id); if (index >= 0) profiles.splice(index, 1); return index >= 0; },
+    reference_add: async ({ path }) => { if (!referenceRoots.includes(path)) referenceRoots.push(path); return { reference_roots: [...referenceRoots], profiles }; },
+    reference_remove: async ({ path }) => { const index = referenceRoots.indexOf(path); if (index >= 0) referenceRoots.splice(index, 1); return { reference_roots: [...referenceRoots], profiles }; },
     history_list: async () => [],
+    action_history_list: async () => [],
+    snapshot_history: async () => [],
     history_clear: async () => 0,
+    quarantine_history: async () => [],
+    quarantine_duplicate: async () => { throw new Error("quarantine needs the desktop app"); },
+    trash_duplicate: async () => { throw new Error("Trash needs the desktop app"); },
+    quarantine_restore: async () => { throw new Error("restore needs the desktop app"); },
+    quarantine_expire: async () => { throw new Error("expiry needs the desktop app"); },
+    quarantine_retention_set: async ({ days }) => { retentionDays = days; return { quarantine_retention_days: retentionDays, reference_roots: [...referenceRoots], profiles }; },
+    insight_query: async () => { throw new Error("The typed query compiler is available in the desktop app"); },
+    cleanup_plan: async () => { throw new Error("The deterministic planner is available in the desktop app"); },
+    local_ai_status: async () => ({ enabled: false, privacy: "local-only", authority: "presentation-only" }),
+    offload_status: async () => ({ compiled: false, configured_providers: [], per_request_consent_required: true, authority: "connector results cannot authorize local deletion" }),
     cancel_scan: async () => true,
   };
 }
@@ -236,9 +294,9 @@ function setStatus(text) {
  * ever firing one. That is why the curtain opens on "counting…" rather than on
  * "0 files", which would look stuck for the whole of a short scan.
  */
-function setScanProgress(files, bytes) {
+function setScanProgress(files, bytes, phase = "walking") {
   document.getElementById("scan-counts").textContent =
-    `${files.toLocaleString()} files · ${human(bytes)}`;
+    `${phase} · ${files.toLocaleString()} files · ${human(bytes)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +306,16 @@ function setScanProgress(files, bytes) {
 const nameOf = (i) => state.nodes[i].n;
 const sizeOf = (i) => state.nodes[i].s;
 const ruleOf = (i) => state.nodes[i].r || null;
+
+function claimedAncestor(index) {
+  let current = index;
+  while (current >= 0) {
+    if (ruleOf(current)) return current;
+    if (current === 0) break;
+    current = state.nodes[current].p;
+  }
+  return null;
+}
 
 function pathOf(index) {
   const parts = [];
@@ -294,6 +362,14 @@ function covers(a, b) {
  * selected ancestor is a no-op. Without this the byte total double-counts.
  */
 function addSelection(index) {
+  // Whole/All may expose personal files as read-only evidence. Selection in
+  // those modes is confined to the nearest deterministic rule finding.
+  if (state.scanMode !== "cache") {
+    const claimed = claimedAncestor(index);
+    if (claimed === null) return;
+    index = claimed;
+  }
+  if (referenceRootFor(pathOf(index), appConfig?.reference_roots)) return;
   for (const existing of [...state.selected]) {
     if (covers(existing, index)) return; // an ancestor already covers it
     if (covers(index, existing)) state.selected.delete(existing);
@@ -791,11 +867,17 @@ function renderList() {
   for (const finding of shown) {
     const tr = document.createElement("tr");
     const checked = state.selected.has(finding.node_id);
+    const referenceRoot = referenceRootFor(finding.path, appConfig?.reference_roots);
     tr.innerHTML = `<td><input type="checkbox" ${checked ? "checked" : ""} aria-label="Select ${finding.rule_id}"></td>
       <td class="mono">${human(finding.reclaimable_size)}</td><td>${finding.tier}</td>
       <td>${ageDays(finding.mtime).toFixed(0)}d</td><td>${finding.rule_id}</td>
       <td class="path"></td>`;
     tr.querySelector("td.path").textContent = finding.path;
+    if (referenceRoot) {
+      const input = tr.querySelector("input");
+      input.disabled = true;
+      input.title = `Protected by reference root ${referenceRoot}`;
+    }
     const details = document.createElement("details");
     details.innerHTML = `<summary>Why matched / how to restore</summary><p></p>`;
     details.querySelector("p").textContent = `${finding.label}. ${finding.regen || "No regeneration guidance."}${finding.warning ? ` Warning: ${finding.warning}` : ""}`;
@@ -824,6 +906,7 @@ function renderHealth() {
     <dt>Volume capacity / free</dt><dd>${stats.volume_capacity == null ? "unavailable" : `${human(stats.volume_capacity)} / ${human(stats.volume_free)}`}</dd>
     <dt>Files / directories</dt><dd>${(stats.files || 0).toLocaleString()} / ${(stats.dirs || 0).toLocaleString()}</dd>
     <dt>User-excluded / unreadable</dt><dd>${stats.excluded || 0} / ${stats.unreadable || 0}</dd>
+    <dt>Snapshot / live refresh</dt><dd>${state.payload.snapshot_saved ? "saved" : "not saved"} / ${state.payload.change_monitoring ? "watching" : "unavailable"}</dd>
     <dt>Duration</dt><dd>${((stats.elapsed_ms || 0) / 1000).toFixed(1)}s</dd></dl>`;
   const meta = document.createElement("p");
   meta.textContent = `Root: ${state.rootPath} · Platform: ${navigator.platform} · ${document.getElementById("app-version").textContent}`;
@@ -839,26 +922,595 @@ function renderHealth() {
   }
 }
 
+function insightSection(title, subtitle = "") {
+  const section = document.createElement("section");
+  section.className = "insight-section";
+  const header = document.createElement("header");
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  header.append(heading);
+  if (subtitle) {
+    const copy = document.createElement("p");
+    copy.textContent = subtitle;
+    header.append(copy);
+  }
+  section.append(header);
+  return section;
+}
+
+function signedHuman(value) {
+  const number = Number(value || 0);
+  return `${number > 0 ? "+" : number < 0 ? "−" : "±"}${human(Math.abs(number))}`;
+}
+
+function appendGrowthTable(section, label, changes) {
+  if (!changes?.length) return;
+  const heading = document.createElement("h3");
+  heading.textContent = label;
+  const table = document.createElement("table");
+  table.className = "insight-table";
+  table.innerHTML = "<thead><tr><th>Area</th><th class=\"number\">Allocated change</th><th class=\"number\">Files</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const change of changes.slice(0, 12)) {
+    const row = document.createElement("tr");
+    row.innerHTML = '<td class="path"></td><td class="number"></td><td class="number"></td>';
+    row.children[0].textContent = change.label;
+    row.children[1].textContent = signedHuman(change.allocated_delta);
+    row.children[2].textContent = Number(change.file_delta) > 0 ? `+${change.file_delta}` : String(change.file_delta);
+    body.append(row);
+  }
+  table.append(body);
+  section.append(heading, table);
+}
+
+function appendFileTable(section, files) {
+  const table = document.createElement("table");
+  table.className = "insight-table";
+  table.innerHTML = "<thead><tr><th>File</th><th>Category</th><th class=\"number\">Allocated</th><th>Action</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const file of visibleFileRows(files)) {
+    const row = document.createElement("tr");
+    const path = document.createElement("td");
+    path.className = "path";
+    path.textContent = file.path;
+    const category = document.createElement("td");
+    category.textContent = file.category;
+    const size = document.createElement("td");
+    size.className = "number";
+    size.textContent = human(file.reclaimable_size);
+    const action = document.createElement("td");
+    const reveal = document.createElement("button");
+    reveal.className = "ghost";
+    reveal.textContent = "Reveal";
+    reveal.onclick = () => revealPath(file.path);
+    action.append(reveal);
+    row.append(path, category, size, action);
+    body.append(row);
+  }
+  table.append(body);
+  section.append(table);
+}
+
+async function quarantineDuplicate(group, file, button) {
+  const confirmed = window.confirm(
+    `Move this duplicate into CacheReaper quarantine?\n\n${file.path}\n\n` +
+      "Another fully verified copy must still exist. This is recoverable and does not free disk space yet."
+  );
+  if (!confirmed) return;
+  button.disabled = true;
+  button.textContent = "Verifying…";
+  try {
+    await call("quarantine_duplicate", {
+      input: {
+        scan_id: state.payload.scan_id,
+        hash: group.hash,
+        path: file.path,
+      },
+    });
+    window.alert("The file was moved into quarantine. It can be restored from Quarantine history.");
+    await runScan(state.rootPath);
+  } catch (error) {
+    window.alert(`Could not quarantine this file: ${error}`);
+    button.disabled = false;
+    button.textContent = "Quarantine…";
+  }
+}
+
+async function trashDuplicate(group, file, button) {
+  const confirmed = window.confirm(
+    `Move this verified duplicate to the system Trash?\n\n${file.path}\n\n` +
+      "CacheReaper will rehash this file and require another unchanged copy. If native Trash is unavailable, it will use recoverable Quarantine instead."
+  );
+  if (!confirmed) return;
+  button.disabled = true;
+  button.textContent = "Verifying…";
+  try {
+    const result = await call("trash_duplicate", {
+      input: {
+        scan_id: state.payload.scan_id,
+        hash: group.hash,
+        path: file.path,
+      },
+      fallbackToQuarantine: true,
+    });
+    window.alert(result.action === "quarantine"
+      ? `Native Trash was unavailable, so the file was moved into CacheReaper Quarantine.\n\n${result.trash_error}`
+      : "The file was moved to the system Trash and can be restored there.");
+    await runScan(state.rootPath);
+  } catch (error) {
+    window.alert(`Could not move this file safely: ${error}`);
+    button.disabled = false;
+    button.textContent = "Trash…";
+  }
+}
+
+function appendForecastSection(content, forecast) {
+  if (!forecast) return;
+  const confidence = Math.round(Number(forecast.confidence_millis || 0) / 10);
+  const spanDays = Number(forecast.span_days_millis || 0) / 1000;
+  const section = insightSection(
+    "Storage forecast",
+    `${Number(forecast.snapshot_count || 0)} local snapshots over ${spanDays.toFixed(1)} days · ${confidence}% confidence · estimate only`
+  );
+  const grid = document.createElement("div");
+  grid.className = "insight-grid";
+  const pressure = forecast.days_until_low_space == null
+    ? "Not projected"
+    : Number(forecast.days_until_low_space) < 1
+      ? "Under 1 day"
+      : `${Number(forecast.days_until_low_space).toLocaleString()} days`;
+  for (const [value, label] of [
+    [`${signedHuman(forecast.growth_bytes_per_day)}/day`, "median growth trend"],
+    [pressure, "until 10% free space"],
+    [String(forecast.anomalies?.length || 0), "new growth anomalies"],
+  ]) {
+    const metric = document.createElement("div");
+    metric.className = "insight-metric";
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    const span = document.createElement("span");
+    span.textContent = label;
+    metric.append(strong, span);
+    grid.append(metric);
+  }
+  section.append(grid);
+  if (forecast.anomalies?.length) {
+    const table = document.createElement("table");
+    table.className = "insight-table";
+    table.innerHTML = "<thead><tr><th>Unexpected growth</th><th>Severity</th><th class=\"number\">Newest change</th><th class=\"number\">Prior median</th></tr></thead>";
+    const body = document.createElement("tbody");
+    for (const anomaly of forecast.anomalies) {
+      const row = document.createElement("tr");
+      row.innerHTML = '<td class="path"></td><td></td><td class="number"></td><td class="number"></td>';
+      row.children[0].textContent = anomaly.label;
+      row.children[1].textContent = anomaly.severity;
+      row.children[2].textContent = signedHuman(anomaly.observed_delta_bytes);
+      row.children[3].textContent = signedHuman(anomaly.baseline_delta_bytes);
+      body.append(row);
+    }
+    table.append(body);
+    section.append(table);
+  }
+  const note = document.createElement("p");
+  note.className = "insight-note";
+  note.textContent = forecast.explanation;
+  section.append(note);
+  content.append(section);
+}
+
+function appendProjectSection(content, projects) {
+  if (!projects?.length) return;
+  const section = insightSection(
+    "Regenerable project storage",
+    "Manifest and rule evidence only. Source code and repository metadata are never proposed for cleanup."
+  );
+  const table = document.createElement("table");
+  table.className = "insight-table";
+  table.innerHTML = "<thead><tr><th>Project</th><th>Evidence</th><th class=\"number\">Artifacts</th><th>Estimated recovery cost</th><th>Action</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const project of projects) {
+    const row = document.createElement("tr");
+    const path = document.createElement("td");
+    path.className = "path";
+    path.textContent = project.root;
+    const evidence = document.createElement("td");
+    evidence.textContent = `${project.ecosystem} · ${project.manifest} · ${project.lockfile_present ? "lockfile" : "no lockfile observed"}`;
+    const bytes = document.createElement("td");
+    bytes.className = "number";
+    bytes.textContent = human(project.artifact_bytes);
+    const cost = document.createElement("td");
+    cost.textContent = `${project.rebuild_cost} · ${formatDuration(project.estimated_regeneration_seconds)}${project.estimated_bandwidth_bytes == null ? "" : ` · up to ${human(project.estimated_bandwidth_bytes)} download`}`;
+    const action = document.createElement("td");
+    const reveal = document.createElement("button");
+    reveal.className = "ghost";
+    reveal.textContent = "Reveal";
+    reveal.onclick = () => revealPath(project.root);
+    action.append(reveal);
+    row.append(path, evidence, bytes, cost, action);
+    body.append(row);
+  }
+  table.append(body);
+  section.append(table);
+  content.append(section);
+}
+
+function appendOwnershipSection(content, ownership) {
+  if (!ownership?.length) return;
+  const section = insightSection(
+    "Application ownership",
+    "Names are compared with locally installed applications. A miss is a possible leftover, never proof of an uninstall."
+  );
+  const table = document.createElement("table");
+  table.className = "insight-table";
+  table.innerHTML = "<thead><tr><th>Application data</th><th>Status</th><th class=\"number\">Allocated</th><th>Action</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const item of ownership) {
+    const row = document.createElement("tr");
+    const path = document.createElement("td");
+    path.className = "path";
+    path.textContent = item.path;
+    const status = document.createElement("td");
+    status.textContent = `${ownershipStateLabel(item.state)} · ${Math.round(Number(item.confidence_millis || 0) / 10)}%`;
+    status.title = item.explanation;
+    const bytes = document.createElement("td");
+    bytes.className = "number";
+    bytes.textContent = human(item.allocated_bytes);
+    const action = document.createElement("td");
+    const reveal = document.createElement("button");
+    reveal.className = "ghost";
+    reveal.textContent = "Reveal";
+    reveal.onclick = () => revealPath(item.path);
+    action.append(reveal);
+    row.append(path, status, bytes, action);
+    body.append(row);
+  }
+  table.append(body);
+  section.append(table);
+  content.append(section);
+}
+
+function appendSimilarMediaSection(content, media) {
+  if (!media || (!media.complete && !(media.warnings || []).length)) return;
+  const candidateCount = Number(media.image_candidates || 0) + Number(media.video_candidates || 0) + Number(media.audio_candidates || 0);
+  const section = insightSection(
+    "Similar media · review only",
+    `${candidateCount.toLocaleString()} bounded candidates · ${Number(media.skipped || 0).toLocaleString()} unreadable/unsupported · perceptual images and sampled audio/video · similar never means duplicate`
+  );
+  if (!(media.groups || []).length) {
+    const empty = document.createElement("p");
+    empty.className = "insight-empty";
+    empty.textContent = media.complete ? "No similar-media groups were found." : "Similar-media analysis did not complete.";
+    section.append(empty);
+  }
+  for (const group of media.groups || []) {
+    const details = document.createElement("details");
+    details.className = "duplicate-group similar-group";
+    const summary = document.createElement("summary");
+    summary.textContent = `${group.files?.length || 0} similar ${group.kind} files`;
+    const meta = document.createElement("span");
+    meta.textContent = `${Math.round(Number(group.similarity_millis || 0) / 10)}% minimum match · ${group.algorithm}`;
+    summary.append(meta);
+    const list = document.createElement("ul");
+    for (const file of group.files || []) {
+      const item = document.createElement("li");
+      const path = document.createElement("span");
+      path.className = "path";
+      path.textContent = file.path;
+      const size = document.createElement("span");
+      size.className = "mono";
+      size.textContent = human(file.allocated_bytes);
+      const reveal = document.createElement("button");
+      reveal.className = "ghost";
+      reveal.textContent = "Reveal";
+      reveal.onclick = () => revealPath(file.path);
+      item.append(path, size, reveal);
+      list.append(item);
+    }
+    details.append(summary, list);
+    section.append(details);
+  }
+  for (const warning of media.warnings || []) {
+    const note = document.createElement("p");
+    note.className = "insight-warning";
+    note.textContent = warning;
+    section.append(note);
+  }
+  content.append(section);
+}
+
+function appendOffloadSection(content, status) {
+  if (!status) return;
+  const section = insightSection("Offload connectors", offloadSummary(status));
+  const note = document.createElement("p");
+  note.className = "insight-note";
+  note.textContent = `${status.per_request_consent_required ? "Per-request consent required" : "Consent policy unavailable"} · ${status.authority || "connector output has no cleanup authority"}`;
+  section.append(note);
+  content.append(section);
+}
+
+function appendAdvancedIntelligence(content, mode) {
+  const intelligence = state.payload?.intelligence || {};
+  appendForecastSection(content, intelligence.forecast);
+  appendProjectSection(content, intelligence.projects);
+  if (mode !== "cache") appendOwnershipSection(content, intelligence.ownership);
+  if (mode === "all") appendSimilarMediaSection(content, state.payload?.media);
+  appendOffloadSection(content, state.payload?.offload);
+}
+
+function renderInsights() {
+  const mode = normalizeMode(state.scanMode);
+  const details = MODE_DETAILS[mode];
+  const analysis = state.payload?.analysis || {};
+  const metrics = analysisMetrics(analysis);
+  const advanced = advancedMetrics(state.payload);
+  document.getElementById("insights-mode").textContent = details.label;
+  document.getElementById("insights-summary").textContent = details.summary;
+  const content = document.getElementById("insights-content");
+  content.innerHTML = "";
+
+  if (mode === "cache") {
+    const section = insightSection("No personal-file inventory", "Cache Scan deliberately keeps the v1 privacy and memory profile.");
+    const empty = document.createElement("p");
+    empty.className = "insight-empty";
+    empty.textContent = "Choose Whole Disk for metadata insights or All Files for locally proven exact duplicates.";
+    section.append(empty);
+    content.append(section);
+    appendAdvancedIntelligence(content, mode);
+    return;
+  }
+
+  const overview = insightSection("Overview", "Bounded, deterministic evidence from this scan snapshot.");
+  const grid = document.createElement("div");
+  grid.className = "insight-grid";
+  const overviewItems = [
+    [metrics.inventoryFiles.toLocaleString(), "inventoried files"],
+    [metrics.categoryCount.toLocaleString(), "file categories"],
+    [metrics.duplicateGroups.toLocaleString(), "exact duplicate groups"],
+    [human(metrics.duplicateBytes), "potential duplicate savings"],
+    [advanced.similarGroups.toLocaleString(), "similar-media groups"],
+    [advanced.projects.toLocaleString(), "projects with artifacts"],
+  ];
+  for (const [value, label] of overviewItems) {
+    const metric = document.createElement("div");
+    metric.className = "insight-metric";
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    const span = document.createElement("span");
+    span.textContent = label;
+    metric.append(strong, span);
+    grid.append(metric);
+  }
+  overview.append(grid);
+  content.append(overview);
+
+  if (state.payload?.growth) {
+    const growth = state.payload.growth;
+    const elapsedDays = Number(growth.elapsed_ms || 0) / 86_400_000;
+    const section = insightSection(
+      "Since the previous snapshot",
+      `${signedHuman(growth.allocated_delta)} allocated · ${Number(growth.file_delta) >= 0 ? "+" : ""}${growth.file_delta} files · ${elapsedDays < 1 ? "less than a day" : `${elapsedDays.toFixed(1)} days`}`
+    );
+    appendGrowthTable(section, "Category changes", growth.categories);
+    appendGrowthTable(section, "Directory changes", growth.directories);
+    content.append(section);
+  }
+
+  const categories = insightSection("Storage by category", "Allocated bytes; shared storage and sparse files may differ from logical size.");
+  const categoryTable = document.createElement("table");
+  categoryTable.className = "insight-table";
+  categoryTable.innerHTML = "<thead><tr><th>Category</th><th class=\"number\">Files</th><th class=\"number\">Allocated</th><th class=\"number\">Logical</th></tr></thead>";
+  const categoryBody = document.createElement("tbody");
+  for (const category of analysis.categories || []) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td></td><td class="number"></td><td class="number"></td><td class="number"></td>`;
+    row.children[0].textContent = category.category;
+    row.children[1].textContent = category.files.toLocaleString();
+    row.children[2].textContent = human(category.reclaimable_size);
+    row.children[3].textContent = human(category.logical_size);
+    categoryBody.append(row);
+  }
+  categoryTable.append(categoryBody);
+  categories.append(categoryTable);
+  content.append(categories);
+
+  const largest = insightSection("Largest files", "Read-only results. Reveal a file to review it in the system file manager.");
+  appendFileTable(largest, analysis.largest_files || []);
+  content.append(largest);
+
+  if ((analysis.old_large_files || []).length) {
+    const old = insightSection("Old large files", "At least 10 MB and not modified for 90 days. Age alone never makes a file disposable.");
+    appendFileTable(old, analysis.old_large_files);
+    content.append(old);
+  }
+
+  if (mode === "all") {
+    const duplicates = insightSection(
+      "Exact duplicates",
+      metrics.complete
+        ? `Every member has a complete SHA-256. This scan reused ${Number(analysis.hash_cache_hits || 0).toLocaleString()} cached hashes and computed ${Number(analysis.hash_cache_misses || 0).toLocaleString()}.`
+        : "Content analysis did not complete; no duplicate action is available."
+    );
+    if (!(analysis.duplicate_groups || []).length) {
+      const empty = document.createElement("p");
+      empty.className = "insight-empty";
+      empty.textContent = metrics.complete
+        ? "No exact duplicates at least 1 MB were found."
+        : "Duplicate analysis was cancelled or unavailable.";
+      duplicates.append(empty);
+    }
+    for (const group of analysis.duplicate_groups || []) {
+      const detailsEl = document.createElement("details");
+      detailsEl.className = "duplicate-group";
+      const summary = document.createElement("summary");
+      summary.textContent = `${group.files.length} identical files`;
+      const meta = document.createElement("span");
+      meta.textContent = `${human(group.reclaimable_size)} potential savings`;
+      summary.append(meta);
+      const list = document.createElement("ul");
+      for (const file of group.files) {
+        const item = document.createElement("li");
+        const path = document.createElement("span");
+        path.className = "path";
+        path.textContent = file.path;
+        const reveal = document.createElement("button");
+        reveal.className = "ghost";
+        reveal.textContent = "Reveal";
+        reveal.onclick = () => revealPath(file.path);
+        const quarantine = document.createElement("button");
+        quarantine.className = "ghost quarantine";
+        const referenceRoot = referenceRootFor(file.path, appConfig?.reference_roots);
+        quarantine.textContent = referenceRoot ? "Reference copy" : "Quarantine…";
+        quarantine.disabled = Boolean(referenceRoot);
+        quarantine.title = referenceRoot
+          ? `Protected by reference root ${referenceRoot}`
+          : "Move this verified duplicate into recoverable quarantine";
+        quarantine.onclick = referenceRoot ? null : () => quarantineDuplicate(group, file, quarantine);
+        const trash = document.createElement("button");
+        trash.className = "ghost trash";
+        trash.textContent = referenceRoot ? "Protected" : "Trash…";
+        trash.disabled = Boolean(referenceRoot);
+        trash.title = referenceRoot
+          ? `Protected by reference root ${referenceRoot}`
+          : "Move this verified duplicate to the system Trash";
+        trash.onclick = referenceRoot ? null : () => trashDuplicate(group, file, trash);
+        item.append(path, reveal, trash, quarantine);
+        list.append(item);
+      }
+      detailsEl.append(summary, list);
+      duplicates.append(detailsEl);
+    }
+    for (const warning of analysis.warnings || []) {
+      const p = document.createElement("p");
+      p.className = "insight-warning";
+      p.textContent = warning;
+      duplicates.append(p);
+    }
+    content.append(duplicates);
+  }
+  appendAdvancedIntelligence(content, mode);
+}
+
+function renderEvidenceResults(insights, container) {
+  container.innerHTML = "";
+  const rows = sortedInsights(insights);
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "insight-empty";
+    empty.textContent = "No current insight matches this filter.";
+    container.append(empty);
+    return;
+  }
+  for (const insight of rows) {
+    const article = document.createElement("article");
+    article.className = "evidence-card";
+    const heading = document.createElement("div");
+    heading.className = "evidence-heading";
+    const title = document.createElement("strong");
+    title.textContent = insight.title;
+    const size = document.createElement("span");
+    size.className = "mono";
+    size.textContent = human(insight.estimated_reclaimable_bytes || 0);
+    heading.append(title, size);
+    const explanation = document.createElement("p");
+    explanation.textContent = insight.explanation;
+    const meta = document.createElement("p");
+    meta.className = "evidence-meta";
+    meta.textContent = `${String(insight.kind || "insight").replaceAll("-", " ")} · ${insight.risk} risk · ${insight.provenance} evidence · ${Math.round((insight.confidence_millis || 0) / 10)}% confidence`;
+    const path = document.createElement("code");
+    path.textContent = insight.paths?.[0] || "No path supplied";
+    article.append(heading, explanation, meta, path);
+    if ((insight.paths?.length || 0) > 1) {
+      const more = document.createElement("small");
+      more.textContent = ` +${insight.paths.length - 1} verified path${insight.paths.length === 2 ? "" : "s"}`;
+      article.append(more);
+    }
+    container.append(article);
+  }
+}
+
+function renderPlan(plan) {
+  const container = document.getElementById("plan-results");
+  container.innerHTML = "";
+  const summary = document.createElement("section");
+  summary.className = `plan-summary ${plan.target_met ? "met" : "short"}`;
+  const heading = document.createElement("strong");
+  heading.textContent = planSummary(plan, human);
+  const detail = document.createElement("p");
+  detail.textContent = `Policy: ${String(plan.policy).replaceAll("-", " ")} · about ${Number(plan.estimated_time_seconds || 0).toLocaleString()}s · rebuild ${String(plan.estimated_rebuild_cost || "none").replaceAll("-", " ")} · bandwidth ${plan.estimated_bandwidth_bytes == null ? "unknown" : human(plan.estimated_bandwidth_bytes)} · snapshot ${plan.snapshot_id}`;
+  summary.append(heading, detail);
+  container.append(summary);
+
+  for (const action of plan.actions || []) {
+    const article = document.createElement("article");
+    article.className = "plan-action";
+    const head = document.createElement("div");
+    head.className = "evidence-heading";
+    const title = document.createElement("strong");
+    title.textContent = String(action.kind).replaceAll("-", " ");
+    const bytes = document.createElement("span");
+    bytes.className = "mono";
+    bytes.textContent = human(action.estimated_reclaimable_bytes || 0);
+    head.append(title, bytes);
+    const explanation = document.createElement("p");
+    explanation.textContent = action.explanation;
+    const meta = document.createElement("p");
+    meta.className = "evidence-meta";
+    meta.textContent = `${action.risk} risk · ${String(action.recoverability).replaceAll("-", " ")} · ${String(action.reclaim_timing).replaceAll("-", " ")}`;
+    const path = document.createElement("code");
+    path.textContent = action.paths?.join(" · ") || "";
+    article.append(head, explanation, meta, path);
+    container.append(article);
+  }
+
+  if ((plan.risks || []).length) {
+    const risks = document.createElement("ul");
+    risks.className = "plan-risks";
+    for (const risk of plan.risks) { const item = document.createElement("li"); item.textContent = risk; risks.append(item); }
+    container.append(risks);
+  }
+
+  const selectable = (plan.actions || []).flatMap((action) => action.kind === "purge-cache" ? (action.node_ids || []) : []);
+  if (selectable.length) {
+    const select = document.createElement("button");
+    select.className = "ghost plan-select";
+    select.textContent = `Review ${selectable.length} cache action${selectable.length === 1 ? "" : "s"} on map`;
+    select.onclick = () => {
+      state.selected = new Set(selectable.filter((node) => state.nodes[node]));
+      state.mode = "select";
+      selectView("map");
+    };
+    container.append(select);
+  }
+}
+
 function render() {
   renderChrome();
   renderFindings();
   renderSelection();
   renderList();
+  renderInsights();
   renderHealth();
   if (state.view === "map") draw();
 }
 
+function selectView(view, shouldRender = true) {
+  state.view = view;
+  document.getElementById("map-wrap").hidden = view !== "map";
+  document.getElementById("list-wrap").hidden = view !== "list";
+  document.getElementById("insights-wrap").hidden = view !== "insights";
+  document.getElementById("ask-wrap").hidden = view !== "ask";
+  document.getElementById("plan-wrap").hidden = view !== "plan";
+  for (const peer of document.querySelectorAll("#view-mode button")) {
+    const on = peer.dataset.view === view;
+    peer.classList.toggle("on", on);
+    peer.setAttribute("aria-selected", String(on));
+  }
+  if (view === "map") resize();
+  if (shouldRender) render();
+}
+
 for (const button of document.querySelectorAll("#view-mode button")) {
-  button.onclick = () => {
-    state.view = button.dataset.view;
-    document.getElementById("map-wrap").hidden = state.view !== "map";
-    document.getElementById("list-wrap").hidden = state.view !== "list";
-    for (const peer of document.querySelectorAll("#view-mode button")) {
-      const on = peer === button; peer.classList.toggle("on", on); peer.setAttribute("aria-selected", String(on));
-    }
-    if (state.view === "map") resize();
-    render();
-  };
+  button.onclick = () => selectView(button.dataset.view);
 }
 for (const id of ["finding-search", "tier-filter", "finding-sort"]) {
   document.getElementById(id).addEventListener(id === "finding-search" ? "input" : "change", () => {
@@ -866,6 +1518,52 @@ for (const id of ["finding-search", "tier-filter", "finding-sort"]) {
   });
 }
 document.getElementById("load-more").onclick = () => { state.listPages += 1; renderList(); };
+
+document.getElementById("ask-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("ask-error");
+  error.hidden = true;
+  try {
+    if (!state.payload?.scan_id) throw new Error("Run a scan first");
+    const result = await call("insight_query", { input: { scan_id: state.payload.scan_id, query: document.getElementById("ask-query").value } });
+    const chips = document.getElementById("ask-ast");
+    chips.innerHTML = "";
+    for (const clause of result.ast.clauses || []) {
+      const chip = document.createElement("span");
+      chip.textContent = clauseLabel(clause);
+      chips.append(chip);
+    }
+    renderEvidenceResults(result.matches, document.getElementById("ask-results"));
+  } catch (reason) {
+    error.textContent = String(reason);
+    error.hidden = false;
+    document.getElementById("ask-results").innerHTML = "";
+  }
+};
+
+document.getElementById("plan-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("plan-error");
+  error.hidden = true;
+  try {
+    if (!state.payload?.scan_id) throw new Error("Run a scan first");
+    const target = targetBytes(document.getElementById("plan-target").value, document.getElementById("plan-unit").value);
+    if (!target) throw new Error("Enter a positive storage target");
+    const query = document.getElementById("plan-query").value.trim();
+    const plan = await call("cleanup_plan", { input: { scan_id: state.payload.scan_id, target_bytes: target, policy: document.getElementById("plan-policy").value, query: query || null } });
+    renderPlan(plan);
+  } catch (reason) {
+    error.textContent = String(reason);
+    error.hidden = false;
+    document.getElementById("plan-results").innerHTML = "";
+  }
+};
+
+call("local_ai_status").then((status) => {
+  const badge = document.getElementById("local-ai-badge");
+  badge.textContent = status.enabled ? "Local AI enabled · presentation only" : "Deterministic · model optional";
+  badge.title = `${status.privacy}; ${status.authority}`;
+}).catch(() => {});
 
 document.getElementById("copy-diagnostics").onclick = async () => {
   const report = diagnostics(state.payload || {}, {
@@ -1248,6 +1946,7 @@ document.getElementById("delete").onclick = async () => {
 };
 
 window.addEventListener("resize", resize);
+document.getElementById("refresh-snapshot").onclick = () => runScan(state.rootPath);
 
 // Debug/test hook: lets browser-driven UI checks assert on internal state and
 // exercise selection through the real code path rather than poking the Set.
@@ -1265,6 +1964,8 @@ function applyPayload(data) {
   state.rootPath = data.root_path;
   state.stats = data.stats;
   state.payload = data;
+  document.getElementById("change-notice").hidden = true;
+  setScanMode(data.mode || state.scanMode);
   state.findings = Array.isArray(data.findings)
     ? data.findings.map((finding) => ({ ...finding, mtime: data.nodes[finding.node_id]?.m || 0 }))
     : data.nodes.flatMap((node, node_id) => node.r ? [{
@@ -1279,6 +1980,7 @@ function applyPayload(data) {
   state.selected.clear();
   state.hover = -1;
   state.drag = null;
+  selectView(state.scanMode === "cache" ? "map" : "insights", false);
 
   document.getElementById("total").textContent = human(data.stats.reclaimable_bytes ?? data.stats.bytes);
 
@@ -1330,6 +2032,8 @@ async function runScan(path) {
 
   document.getElementById("scan-path").textContent = path || "your home folder";
   document.getElementById("scan-counts").textContent = "counting…";
+  scanningEl.querySelector("h2").textContent =
+    state.scanMode === "all" ? "Reading and hashing candidates" : "Reading the tree";
   scanningEl.hidden = false;
   const cancel = document.getElementById("cancel-scan");
   Object.assign(cancel, { disabled: cancelViewState(false).disabled, textContent: cancelViewState(false).label });
@@ -1337,7 +2041,9 @@ async function runScan(path) {
   setStatus("scanning…");
   try {
     const request = {
+      schema: 2,
       scan_id: activeScanId,
+      mode: state.scanMode,
       root: state.activeProfileId ? null : (path || state.rootPath || null),
       profile_id: state.activeProfileId,
       excluded_paths: [],
@@ -1926,6 +2632,32 @@ document.getElementById("save-profile").onclick = async () => {
 
 async function renderProfilesSheet() {
   await refreshProfiles();
+  const referenceBody = document.getElementById("reference-roots-body");
+  referenceBody.innerHTML = "";
+  const referenceRoots = appConfig.reference_roots || [];
+  if (!referenceRoots.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No reference roots. Add a master, archive, or backup folder to make it immutable.";
+    referenceBody.append(empty);
+  }
+  for (const path of referenceRoots) {
+    const row = document.createElement("p");
+    const label = document.createElement("span");
+    label.className = "path";
+    label.textContent = path;
+    const remove = document.createElement("button");
+    remove.className = "ghost";
+    remove.textContent = "Remove protection";
+    remove.onclick = async () => {
+      if (!window.confirm(`Remove immutable reference protection from ${path}? A fresh scan will be required.`)) return;
+      await call("reference_remove", { path });
+      await renderProfilesSheet();
+      if (state.payload) runScan(state.rootPath);
+    };
+    row.append(label, " ", remove);
+    referenceBody.append(row);
+  }
   const body = document.getElementById("profiles-body"); body.innerHTML = "";
   let knownRules = new Set(state.findings.map((finding) => finding.rule_id));
   try { knownRules = new Set(await call("rule_ids")); } catch (_) { /* snapshot findings are the fallback */ }
@@ -1981,31 +2713,137 @@ document.getElementById("manage-profiles").onclick = async () => {
   document.getElementById("profiles-sheet").hidden = false; await renderProfilesSheet();
 };
 document.getElementById("profiles-close").onclick = () => { document.getElementById("profiles-sheet").hidden = true; };
+document.getElementById("reference-add").onclick = async () => {
+  const path = await chooseFolder();
+  if (!path || !window.confirm(`Protect ${path} as an immutable reference root? Files remain visible for duplicate comparison.`)) return;
+  try {
+    await call("reference_add", { path });
+    await renderProfilesSheet();
+    if (state.payload) runScan(state.rootPath);
+  } catch (error) {
+    window.alert(`Could not add reference root: ${error}`);
+  }
+};
 
 async function renderHistory() {
   const body = document.getElementById("history-body"); body.textContent = "Loading…";
   try {
-    const receipts = await call("history_list"); body.innerHTML = "";
-    if (!receipts.length) { body.textContent = "No cleanup receipts yet."; return; }
-    for (const receipt of receipts) {
-      const view = receiptPresentation(receipt, human);
+    const actions = await call("action_history_list"); body.innerHTML = "";
+    if (!actions.length) { body.textContent = "No storage actions yet."; return; }
+    for (const action of actions) {
       const article = document.createElement("article");
-      article.innerHTML = `<strong></strong><p></p><details><summary>Removed / skipped items</summary><div class="receipt-items"></div></details>`;
-      article.querySelector("strong").textContent = view.title;
-      article.querySelector("p").textContent = `${view.status} · estimated removal ${view.estimated} · system-wide free-space delta ${view.delta} · ${view.counts}${receipt.parse_warning ? ` · ${receipt.parse_warning}` : ""}`;
+      article.innerHTML = `<strong></strong><p></p><details><summary>Action details</summary><div class="receipt-items"></div></details>`;
+      article.querySelector("strong").textContent = `${action.action.replaceAll("-", " ")} · ${new Date(Number(action.at || 0)).toLocaleString()}`;
+      const delta = action.actual_free_space_change == null ? "not measured" : `${action.actual_free_space_change >= 0 ? "+" : "−"}${human(Math.abs(action.actual_free_space_change))}`;
+      article.querySelector("p").textContent = `${action.state} · ${human(action.estimated_bytes || 0)} · free-space delta ${delta} · ${action.recovery}${action.warning ? ` · ${action.warning}` : ""}`;
       const items = article.querySelector(".receipt-items");
-      for (const item of receipt.items) { const p = document.createElement("p"); p.textContent = `${item.status}: ${item.path} — ${item.rule}${item.regen ? `; restore: ${item.regen}` : ""}${item.reason ? `; ${item.reason}` : ""}`; items.append(p); }
-      const remove = document.createElement("button"); remove.className = "ghost"; remove.textContent = "Delete receipt";
-      remove.onclick = async () => { if (window.confirm("Delete this receipt permanently?")) { await call("history_delete", { receiptId: receipt.receipt_id }); renderHistory(); } };
-      article.append(remove); body.append(article);
+      for (const item of action.items) { const p = document.createElement("p"); p.textContent = `${item.state}: ${item.path}${item.detail ? ` — ${item.detail}` : ""}`; items.append(p); }
+      body.append(article);
     }
   } catch (error) { body.textContent = String(error); }
 }
 document.getElementById("open-history").onclick = () => { document.getElementById("history-sheet").hidden = false; renderHistory(); };
 document.getElementById("history-close").onclick = () => { document.getElementById("history-sheet").hidden = true; };
 document.getElementById("history-clear").onclick = async () => {
-  if (!window.confirm("Clear all cleanup history permanently?")) return;
+  if (!window.confirm("Clear completed cache-cleanup receipts? Quarantine and Trash recovery records will remain.")) return;
   await call("history_clear"); renderHistory();
+};
+
+async function renderQuarantineHistory() {
+  const body = document.getElementById("quarantine-body");
+  body.textContent = "Loading…";
+  try {
+    const [records, config] = await Promise.all([call("quarantine_history"), call("config_get")]);
+    appConfig = config;
+    const retention = document.getElementById("quarantine-retention");
+    retention.querySelector('option[data-custom="true"]')?.remove();
+    const retentionValue = config.quarantine_retention_days === null
+      ? "never" : String(config.quarantine_retention_days);
+    if (![...retention.options].some((option) => option.value === retentionValue)) {
+      const custom = document.createElement("option");
+      custom.value = retentionValue;
+      custom.dataset.custom = "true";
+      custom.textContent = `After ${retentionValue} days`;
+      retention.append(custom);
+    }
+    retention.value = retentionValue;
+    body.innerHTML = "";
+    if (!records.length) {
+      body.textContent = "No quarantined files.";
+      return;
+    }
+    for (const record of records) {
+      const article = document.createElement("article");
+      const title = document.createElement("strong");
+      title.textContent = record.state === "quarantined" ? "Recoverable file" :
+        record.state === "recovery-required" ? "Recovery available" : record.state;
+      const detail = document.createElement("p");
+      const expiry = expiryPresentation(record, config.quarantine_retention_days);
+      detail.textContent = `${human(record.logical_size)} · ${record.original_path}${expiry.message ? ` · ${expiry.message}` : ""}${record.reason ? ` · ${record.reason}` : ""}${record.parse_warning ? ` · ${record.parse_warning}` : ""}`;
+      article.append(title, detail);
+      if (record.state === "quarantined" || record.state === "recovery-required") {
+        const restore = document.createElement("button");
+        restore.className = "primary";
+        restore.textContent = "Restore to original location";
+        restore.onclick = async () => {
+          restore.disabled = true;
+          restore.textContent = "Restoring…";
+          try {
+            await call("quarantine_restore", { id: record.id });
+            await renderQuarantineHistory();
+          } catch (error) {
+            window.alert(`Could not restore this file: ${error}`);
+            restore.disabled = false;
+            restore.textContent = "Restore to original location";
+          }
+        };
+        article.append(restore);
+      }
+      if (expiry.eligible) {
+        const expire = document.createElement("button");
+        expire.className = "danger quarantine-expire";
+        expire.textContent = "Permanently expire…";
+        expire.onclick = async () => {
+          const typed = window.prompt(
+            `This permanently deletes the quarantined file. CacheReaper will rehash another copy first.\n\nType “${expiry.phrase}” to continue.`
+          );
+          if (typed !== expiry.phrase) return;
+          expire.disabled = true;
+          expire.textContent = "Revalidating…";
+          try {
+            await call("quarantine_expire", { id: record.id, confirmation: typed });
+            await renderQuarantineHistory();
+          } catch (error) {
+            window.alert(`Could not permanently expire this file: ${error}`);
+            expire.disabled = false;
+            expire.textContent = "Permanently expire…";
+          }
+        };
+        article.append(" ", expire);
+      }
+      body.append(article);
+    }
+  } catch (error) {
+    body.textContent = String(error);
+  }
+}
+
+document.getElementById("open-quarantine").onclick = () => {
+  document.getElementById("quarantine-sheet").hidden = false;
+  renderQuarantineHistory();
+};
+document.getElementById("quarantine-close").onclick = () => {
+  document.getElementById("quarantine-sheet").hidden = true;
+};
+document.getElementById("quarantine-retention").onchange = async (event) => {
+  const days = event.target.value === "never" ? null : Number(event.target.value);
+  try {
+    appConfig = await call("quarantine_retention_set", { days });
+    await renderQuarantineHistory();
+  } catch (error) {
+    window.alert(`Could not save retention policy: ${error}`);
+    await renderQuarantineHistory();
+  }
 };
 
 document.getElementById("choose").onclick = async () => {

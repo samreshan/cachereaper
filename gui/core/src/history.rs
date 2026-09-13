@@ -61,6 +61,31 @@ pub struct Receipt {
     pub file_name: String,
 }
 
+/// Stable, action-oriented projection over every durable M3 audit format.
+/// Existing receipt and quarantine files remain readable without migration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActionHistoryItem {
+    pub path: String,
+    pub state: String,
+    pub detail: String,
+    pub logical_size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActionHistoryEntry {
+    pub id: String,
+    pub at: u128,
+    pub action: String,
+    pub state: String,
+    pub root: String,
+    pub estimated_bytes: u64,
+    pub actual_free_space_change: Option<i128>,
+    pub recoverable: bool,
+    pub recovery: String,
+    pub warning: Option<String>,
+    pub items: Vec<ActionHistoryItem>,
+}
+
 pub fn audit_dir() -> PathBuf {
     crate::guard::home().join(".cachereaper")
 }
@@ -106,6 +131,125 @@ pub fn read_history_from(dir: &Path) -> std::io::Result<Vec<Receipt>> {
 
 pub fn read_history() -> std::io::Result<Vec<Receipt>> {
     read_history_from(&audit_dir())
+}
+
+pub fn action_history() -> Result<Vec<ActionHistoryEntry>, String> {
+    action_history_from(&audit_dir())
+}
+
+pub fn action_history_from(dir: &Path) -> Result<Vec<ActionHistoryEntry>, String> {
+    let mut actions: Vec<ActionHistoryEntry> = read_history_from(dir)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|receipt| {
+            let state = if receipt.complete {
+                "completed"
+            } else {
+                "interrupted"
+            };
+            ActionHistoryEntry {
+                id: receipt.receipt_id,
+                at: receipt
+                    .summary
+                    .as_ref()
+                    .map_or(receipt.started_at, |summary| summary.finished_at),
+                action: "cache-purge".to_string(),
+                state: state.to_string(),
+                root: receipt.root,
+                estimated_bytes: receipt
+                    .summary
+                    .as_ref()
+                    .map_or(receipt.estimated_bytes, |summary| {
+                        summary.estimated_removed_bytes
+                    }),
+                actual_free_space_change: receipt
+                    .summary
+                    .as_ref()
+                    .and_then(|summary| summary.signed_free_space_change),
+                recoverable: false,
+                recovery: "Cleanup receipts are audit records, not undo data".to_string(),
+                warning: receipt.parse_warning,
+                items: receipt
+                    .items
+                    .into_iter()
+                    .map(|item| ActionHistoryItem {
+                        path: item.path,
+                        state: item.status,
+                        detail: if item.reason.is_empty() {
+                            item.label
+                        } else {
+                            item.reason
+                        },
+                        logical_size: item.estimated_bytes,
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+
+    actions.extend(
+        crate::quarantine::list_quarantine_from(dir)?
+            .into_iter()
+            .map(|record| {
+                let recoverable = matches!(
+                    record.state.as_str(),
+                    "quarantined" | "planned" | "recovery-required"
+                );
+                ActionHistoryEntry {
+                    id: record.id,
+                    at: record.at,
+                    action: "quarantine".to_string(),
+                    state: record.state,
+                    root: record.scan_root,
+                    estimated_bytes: record.logical_size,
+                    actual_free_space_change: Some(0),
+                    recoverable,
+                    recovery: if recoverable {
+                        "Restore from CacheReaper Quarantine".to_string()
+                    } else {
+                        "No recovery action is currently available".to_string()
+                    },
+                    warning: record.parse_warning,
+                    items: vec![ActionHistoryItem {
+                        path: record.original_path,
+                        state: "file".to_string(),
+                        detail: record.reason,
+                        logical_size: record.logical_size,
+                    }],
+                }
+            }),
+    );
+    actions.extend(
+        crate::trash::list_trash_from(dir)?
+            .into_iter()
+            .map(|record| {
+                let recoverable = matches!(record.state.as_str(), "trashed" | "recovery-required");
+                ActionHistoryEntry {
+                    id: record.id,
+                    at: record.at,
+                    action: "trash".to_string(),
+                    state: record.state,
+                    root: record.scan_root,
+                    estimated_bytes: record.logical_size,
+                    actual_free_space_change: None,
+                    recoverable,
+                    recovery: if recoverable {
+                        "Restore with the operating system Trash".to_string()
+                    } else {
+                        "No recovery action is currently available".to_string()
+                    },
+                    warning: record.parse_warning,
+                    items: vec![ActionHistoryItem {
+                        path: record.original_path,
+                        state: "file".to_string(),
+                        detail: record.reason,
+                        logical_size: record.logical_size,
+                    }],
+                }
+            }),
+    );
+    actions.sort_by(|left, right| right.at.cmp(&left.at).then_with(|| right.id.cmp(&left.id)));
+    Ok(actions)
 }
 
 fn parse_receipt(path: &Path, file_name: &str) -> std::io::Result<Option<Receipt>> {
@@ -259,12 +403,16 @@ pub fn free_space(path: &Path) -> Option<u64> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn fixture() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "cachereaper-history-{}-{}",
+            "cachereaper-history-{}-{}-{}",
             std::process::id(),
-            now_millis()
+            now_millis(),
+            FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
@@ -304,12 +452,46 @@ mod tests {
     }
 
     #[test]
+    fn action_history_projects_every_m3_record_type_in_one_timeline() {
+        let dir = fixture();
+        std::fs::write(
+            dir.join("receipt-one.jsonl"),
+            concat!(
+                "{\"schema\":1,\"kind\":\"header\",\"receipt_id\":\"one\",\"started_at\":1,\"root\":\"/tmp\",\"estimated_bytes\":4,\"free_before\":10}\n",
+                "{\"schema\":1,\"kind\":\"summary\",\"finished_at\":2,\"removed_count\":0,\"skipped_count\":0,\"estimated_removed_bytes\":0,\"free_after\":10,\"signed_free_space_change\":0,\"complete\":true}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("quarantine-two.jsonl"),
+            "{\"schema\":1,\"kind\":\"quarantine\",\"id\":\"two\",\"at\":3,\"state\":\"restored\",\"original_path\":\"/tmp/two\",\"quarantined_path\":\"/tmp/vault/two\",\"scan_root\":\"/tmp\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"logical_size\":2}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("trash-three.jsonl"),
+            "{\"schema\":1,\"kind\":\"trash\",\"id\":\"three\",\"at\":4,\"state\":\"trashed\",\"original_path\":\"/tmp/three\",\"trashed_path\":\"/tmp/.Trash/three\",\"scan_root\":\"/tmp\",\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"logical_size\":3}\n",
+        )
+        .unwrap();
+
+        let actions = action_history_from(&dir).unwrap();
+        assert_eq!(
+            actions
+                .iter()
+                .map(|entry| entry.action.as_str())
+                .collect::<Vec<_>>(),
+            vec!["trash", "quarantine", "cache-purge"]
+        );
+        assert!(actions[0].recoverable);
+        assert!(!actions[1].recoverable);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn filename_validation_rejects_escape_attempts() {
         assert!(valid_receipt_filename("receipt-1-2-3.jsonl"));
         assert!(!valid_receipt_filename("../receipt-1.jsonl"));
         assert!(!valid_receipt_filename("config.json"));
     }
-
 
     #[test]
     fn free_space_deltas_keep_their_sign() {

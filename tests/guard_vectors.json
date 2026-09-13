@@ -29,6 +29,7 @@
     {"path": "$HOME/Library/Keychains/login.keychain-db", "reason": "protected component: Keychains", "why": "credentials"},
     {"path": "$HOME/Library/Mobile Documents/com~apple~CloudDocs/x", "reason": "protected component: Mobile Documents", "why": "iCloud Drive backing store"},
     {"path": "$HOME/Pictures/Photos Library.photoslibrary/originals", "reason": "protected component: Photos Library.photoslibrary", "why": "irreplaceable user data"},
+    {"path": "$HOME/.cachereaper-quarantine/transaction/file.bin", "reason": "protected component: .cachereaper-quarantine", "why": "recoverable quarantine vault must never enter a cleanup path"},
 
     {"path": "/", "reason": "path too shallow", "why": "filesystem root"},
     {"path": "/usr", "reason": "path too shallow", "why": "single-component system path"},

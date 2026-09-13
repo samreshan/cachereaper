@@ -1,16 +1,18 @@
 # Releasing
 
-## 1.6.1 — Start with control
+## 2.0.0 — Intelligent storage, with evidence
 
-Adds a task-led home screen with direct folder and saved-profile choices. Update
-checks now start when the app opens and an available update is actionable from
-that home screen, before any scan completes.
+Adds explicit Cache, Whole Disk, and All Files scan modes; exact duplicate proof;
+recoverable Trash and quarantine actions; immutable snapshots and incremental
+hashing; typed Ask and Plan workspaces; and bounded advanced intelligence for
+similar media, application ownership, project artifacts, forecasts, and
+anomalies. See `RELEASE_NOTES.md` for the complete user-facing notes.
 
 Tag it and push. The rest is CI.
 
 ```bash
-git tag -a v1.6.1 -m "What changed, in a sentence or three."
-git push origin v1.6.1
+git tag -a v2.0.0 -F RELEASE_NOTES.md
+git push origin v2.0.0
 ```
 
 The tag message is not decoration: it becomes the release note shown inside the
@@ -76,6 +78,6 @@ Updater artifacts are switched on by a `--config` flag in CI rather than in
 
 ## Anyone already running an older build
 
-Only builds from this release onwards can update themselves; there was no
-updater in 1.4.0 and earlier. Those copies have to be replaced once, the old
-way, before they can start doing it themselves.
+Only builds from 1.5.0 onwards can update themselves; there was no updater in
+1.4.0 and earlier. Those copies have to be replaced once, the old way, before
+they can start doing it themselves.

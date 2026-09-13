@@ -9,3 +9,12 @@ export function exclusionSections(config = {}, knownRuleIds = new Set()) {
       section(`${profile.name} — ${profile.root}`, profile.excluded_paths, profile.excluded_rules, profile.id)),
   ];
 }
+
+export function referenceRootFor(path, roots = []) {
+  const clean = (value) => String(value || "").replaceAll("\\", "/").replace(/\/+$/, "");
+  const candidate = clean(path);
+  return roots.find((root) => {
+    const boundary = clean(root);
+    return boundary && (candidate === boundary || candidate.startsWith(`${boundary}/`) || boundary.startsWith(`${candidate}/`));
+  }) || null;
+}

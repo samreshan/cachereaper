@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::guard::{home, validate_for_delete, Target};
+use crate::guard::{home, matching_reference_root, validate_for_delete, Target};
 use crate::history::{
     free_space, now_millis, signed_free_space_change, ReceiptHeader, ReceiptItem, ReceiptSummary,
     RECEIPT_SCHEMA,
@@ -53,13 +53,25 @@ fn write_line<T: serde::Serialize>(file: &mut std::fs::File, value: &T) -> std::
     file.flush()
 }
 
-pub fn purge(targets: &[Target], allowed: &[PathBuf], dry_run: bool) -> PurgeResult {
-    purge_to(targets, allowed, dry_run, &home().join(".cachereaper"))
+pub fn purge(
+    targets: &[Target],
+    allowed: &[PathBuf],
+    reference_roots: &[PathBuf],
+    dry_run: bool,
+) -> PurgeResult {
+    purge_to(
+        targets,
+        allowed,
+        reference_roots,
+        dry_run,
+        &home().join(".cachereaper"),
+    )
 }
 
 fn purge_to(
     targets: &[Target],
     allowed: &[PathBuf],
+    reference_roots: &[PathBuf],
     dry_run: bool,
     audit_dir: &Path,
 ) -> PurgeResult {
@@ -117,7 +129,9 @@ fn purge_to(
     };
 
     for target in targets {
-        let why = validate_for_delete(target, allowed);
+        let why = matching_reference_root(&target.path, reference_roots)
+            .map(|root| format!("reference root is immutable: {}", root.display()))
+            .unwrap_or_else(|| validate_for_delete(target, allowed));
         if !why.is_empty() {
             receipt_skipped += 1;
             if why != "already gone" {
@@ -254,7 +268,13 @@ mod tests {
     fn removes_the_target_and_leaves_source_alone() {
         let root = fixture();
         let t = target(root.join("proj/node_modules"), "node_modules");
-        let result = purge_to(&[t], &[root.clone()], false, &root.join(".audit"));
+        let result = purge_to(
+            &[t],
+            std::slice::from_ref(&root),
+            &[],
+            false,
+            &root.join(".audit"),
+        );
 
         assert_eq!(result.removed, 1);
         assert!(result.skipped.is_empty(), "{:?}", result.skipped);
@@ -270,7 +290,13 @@ mod tests {
     fn dry_run_removes_nothing() {
         let root = fixture();
         let t = target(root.join("proj/node_modules"), "node_modules");
-        let result = purge_to(&[t], &[root.clone()], true, &root.join(".audit"));
+        let result = purge_to(
+            &[t],
+            std::slice::from_ref(&root),
+            &[],
+            true,
+            &root.join(".audit"),
+        );
 
         assert_eq!(result.removed, 1);
         assert!(
@@ -287,7 +313,7 @@ mod tests {
         let t = target(victim.clone(), "node_modules");
         let impossible = root.join("audit-is-a-file");
         std::fs::write(&impossible, b"not a directory").unwrap();
-        let result = purge_to(&[t], std::slice::from_ref(&root), false, &impossible);
+        let result = purge_to(&[t], std::slice::from_ref(&root), &[], false, &impossible);
 
         assert_eq!(result.removed, 0);
         assert!(result.audit_error.is_some());
@@ -299,7 +325,7 @@ mod tests {
     fn refuses_a_target_outside_the_allowed_roots() {
         let root = fixture();
         let t = target(root.join("proj/node_modules"), "node_modules");
-        let result = purge_to(&[t], &[home()], false, &root.join(".audit"));
+        let result = purge_to(&[t], &[home()], &[], false, &root.join(".audit"));
 
         assert_eq!(result.removed, 0);
         assert_eq!(result.skipped.len(), 1);
@@ -313,7 +339,13 @@ mod tests {
         let root = fixture();
         // the selection said node_modules; the path now points at source
         let t = target(root.join("proj/src"), "node_modules");
-        let result = purge_to(&[t], &[root.clone()], false, &root.join(".audit"));
+        let result = purge_to(
+            &[t],
+            std::slice::from_ref(&root),
+            &[],
+            false,
+            &root.join(".audit"),
+        );
 
         assert_eq!(result.removed, 0);
         assert!(result.skipped[0].contains("name changed since scan"));
@@ -334,11 +366,37 @@ mod tests {
             label: String::new(),
             regen: String::new(),
         };
-        let result = purge_to(&[t], &[root.clone()], false, &root.join(".audit"));
+        let result = purge_to(
+            &[t],
+            std::slice::from_ref(&root),
+            &[],
+            false,
+            &root.join(".audit"),
+        );
 
         assert_eq!(result.removed, 0);
         assert!(result.skipped[0].contains("protected component"));
         assert!(root.join("proj/.git/objects").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_cache_targets_inside_reference_roots() {
+        let root = fixture();
+        let victim = root.join("proj/node_modules");
+        let t = target(victim.clone(), "node_modules");
+        let references = vec![root.join("proj")];
+        let result = purge_to(
+            &[t],
+            std::slice::from_ref(&root),
+            &references,
+            false,
+            &root.join(".audit"),
+        );
+
+        assert_eq!(result.removed, 0);
+        assert!(result.skipped[0].contains("reference root is immutable"));
+        assert!(victim.exists());
         std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -115,6 +115,32 @@ class TestDeleteValidation(unittest.TestCase):
         c = cand(self.tmp / "a" / "node_modules", rule="node-modules", tier="medium")
         self.assertEqual(cr.validate_for_delete(c, [self.tmp]), "already gone")
 
+    def test_rejects_reference_descendants_and_ancestor_deletion(self):
+        reference = self.tmp / "archive"
+        target = reference / "project" / "node_modules"
+        target.mkdir(parents=True)
+        child = cand(target, rule="node-modules", tier="medium")
+        self.assertIn(
+            "reference root is immutable",
+            cr.validate_for_delete(child, [self.tmp], [reference]),
+        )
+        parent = cand(self.tmp, rule="node-modules", tier="medium", expect_name=self.tmp.name)
+        self.assertIn(
+            "reference root is immutable",
+            cr.validate_for_delete(parent, [self.tmp], [reference]),
+        )
+
+    @unittest.skipIf(os.name == "nt", "creating symlinks may require Windows developer mode")
+    def test_reference_matching_resolves_a_missing_leaf_through_symlink_parent(self):
+        reference = self.tmp / "masters"
+        reference.mkdir()
+        alias = self.tmp / "ordinary"
+        alias.symlink_to(reference, target_is_directory=True)
+        self.assertEqual(
+            cr.matching_reference_root(alias / "future.raw", [reference]),
+            reference,
+        )
+
 
 class TestOnDiskSize(unittest.TestCase):
     """Sizes must reflect blocks occupied, never logical length."""
@@ -384,6 +410,7 @@ class TestSavedExclusions(unittest.TestCase):
 
     def test_ignore_saved_exclusions_keeps_profile_root(self):
         (cr.LOG_DIR / "config.json").write_text(json.dumps({
+            "reference_roots": [str(self.root / "keep")],
             "profiles": [{"id": "p1", "name": "Work", "root": str(self.root),
                           "excluded_paths": [str(self.root)], "excluded_rules": ["node-modules"]}],
         }))
@@ -392,6 +419,8 @@ class TestSavedExclusions(unittest.TestCase):
         ])
         cr.apply_saved_scan_settings(args)
         self.assertEqual(len(cr.collect(args)), 2)
+        self.assertEqual(args.reference_roots, [self.root / "keep"],
+                         "ignore exclusions must never disable safety boundaries")
 
     def test_profile_and_roots_conflict(self):
         with self.assertRaises(SystemExit):

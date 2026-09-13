@@ -34,12 +34,26 @@
       </select>
       <button id="save-profile" class="ghost" title="Save current root as a profile">Save profile</button>
 
+      <label class="control scan-mode-control">
+        <span>scan</span>
+        <span class="select-wrap">
+          <select id="scan-mode" aria-label="Scan mode">
+            <option value="cache">Cache</option>
+            <option value="whole">Whole Disk</option>
+            <option value="all">All Files</option>
+          </select>
+        </span>
+      </label>
+
       <nav id="crumbs" aria-label="Breadcrumb"></nav>
       <div class="spacer"></div>
 
       <div id="view-mode" class="segmented" role="tablist" aria-label="Findings view">
         <button role="tab" data-view="map" class="on" aria-selected="true">Map</button>
         <button role="tab" data-view="list" aria-selected="false">List</button>
+        <button role="tab" data-view="insights" aria-selected="false">Insights</button>
+        <button role="tab" data-view="ask" aria-selected="false">Ask</button>
+        <button role="tab" data-view="plan" aria-selected="false">Plan</button>
       </div>
 
       <div id="mode" class="segmented" role="tablist" aria-label="Interaction mode">
@@ -88,6 +102,59 @@
         </table>
         <button id="load-more" class="ghost" hidden>Load more</button>
         <p id="list-status" role="status"></p>
+      </section>
+
+      <section id="insights-wrap" hidden aria-label="Storage insights">
+        <header class="insights-head">
+          <div>
+            <p class="eyebrow" id="insights-mode">Whole Disk</p>
+            <h1>Storage insights</h1>
+            <p id="insights-summary"></p>
+          </div>
+          <span class="read-only-badge">Read-only evidence</span>
+        </header>
+        <div id="insights-content"></div>
+      </section>
+
+      <section id="ask-wrap" class="assistant-wrap" hidden aria-label="Ask storage evidence">
+        <header class="insights-head">
+          <div>
+            <p class="eyebrow">Typed query</p>
+            <h1>Ask your scan</h1>
+            <p>Compile plain language into a visible, allowlisted filter. Nothing here runs commands or changes files.</p>
+          </div>
+          <span class="read-only-badge" id="local-ai-badge">Deterministic</span>
+        </header>
+        <form id="ask-form" class="assistant-controls">
+          <label for="ask-query">Filter current evidence</label>
+          <div class="assistant-input-row">
+            <input id="ask-query" type="search" autocomplete="off" placeholder="size &gt; 2 GB and age &gt; 180 days" />
+            <button class="primary" type="submit">Compile &amp; search</button>
+          </div>
+          <p class="assistant-help">Try “category is video”, “path contains downloads”, “risk is low”, or “kind is exact duplicate”. Join up to 8 clauses with “and”.</p>
+        </form>
+        <p id="ask-error" class="assistant-error" role="alert" hidden></p>
+        <div id="ask-ast" class="filter-chips" aria-label="Compiled filter"></div>
+        <div id="ask-results" class="assistant-results"></div>
+      </section>
+
+      <section id="plan-wrap" class="assistant-wrap" hidden aria-label="Cleanup planner">
+        <header class="insights-head">
+          <div>
+            <p class="eyebrow">Snapshot-bound plan</p>
+            <h1>Build a cleanup plan</h1>
+            <p>Set a storage goal. The deterministic planner can use only actions already permitted by this scan’s evidence.</p>
+          </div>
+          <span class="read-only-badge">Review before action</span>
+        </header>
+        <form id="plan-form" class="assistant-controls plan-controls">
+          <label>Storage target <span class="assistant-input-row"><input id="plan-target" type="number" min="0.1" step="0.1" value="5" /><select id="plan-unit"><option>GB</option><option>MB</option><option>TB</option></select></span></label>
+          <label>Policy <select id="plan-policy"><option value="safest">Safest</option><option value="balanced" selected>Balanced</option><option value="maximum">Maximum</option><option value="fastest-recovery">Fastest recovery</option></select></label>
+          <label>Optional evidence filter <input id="plan-query" type="search" autocomplete="off" placeholder="risk is low and size &gt; 100 MB" /></label>
+          <button class="primary" type="submit">Generate plan</button>
+        </form>
+        <p id="plan-error" class="assistant-error" role="alert" hidden></p>
+        <div id="plan-results" class="assistant-results"></div>
       </section>
 
       <aside id="panel">
@@ -165,6 +232,7 @@
         <div class="row utility-links">
           <button id="manage-profiles" class="ghost">Profiles &amp; Exclusions</button>
           <button id="open-history" class="ghost">History</button>
+          <button id="open-quarantine" class="ghost">Quarantine</button>
         </div>
 
         <!-- Two different denials land here: a folder the user refused, which
@@ -173,6 +241,11 @@
         <div id="warning" hidden>
           <p id="warning-text"></p>
           <button id="review-access" class="ghost">Review access</button>
+        </div>
+
+        <div id="change-notice" hidden>
+          <p>Files changed after this snapshot. Rescan before relying on duplicate evidence or growth totals.</p>
+          <button id="refresh-snapshot" class="ghost">Refresh snapshot</button>
         </div>
 
         <!-- The version, and the two controls that go with it. Last in the
@@ -207,9 +280,26 @@
           <p class="home-kicker">Disk cleanup, with receipts</p>
           <h1 id="home-title">Make room, deliberately.</h1>
           <p class="home-lede">
-            See what is reclaimable before you remove it. CacheReaper reads
-            only the folder you choose, then keeps a local receipt of cleanup.
+            Reclaim known caches, map a whole disk, or deeply inspect files for
+            redundancy. Every scan stays local and explains its evidence.
           </p>
+          <div id="home-scan-modes" class="scan-mode-cards" role="radiogroup" aria-label="Scan mode">
+            <button type="button" class="scan-mode-card on" data-scan-mode="cache" role="radio" aria-checked="true">
+              <span class="mode-speed">Fast · metadata</span>
+              <strong>Cache Scan</strong>
+              <small>Known caches and build artifacts. Rule-backed cleanup.</small>
+            </button>
+            <button type="button" class="scan-mode-card" data-scan-mode="whole" role="radio" aria-checked="false">
+              <span class="mode-speed">Thorough · metadata</span>
+              <strong>Whole Disk</strong>
+              <small>Largest, oldest, and categorized files. No contents read.</small>
+            </button>
+            <button type="button" class="scan-mode-card" data-scan-mode="all" role="radio" aria-checked="false">
+              <span class="mode-speed">Deep · reads candidates</span>
+              <strong>All Files</strong>
+              <small>Whole Disk plus full hashing for exact duplicates.</small>
+            </button>
+          </div>
           <div class="home-actions">
             <button id="home-scan-home" class="primary">Scan home folder</button>
             <button id="home-choose-folder" class="ghost">Choose a folder…</button>
@@ -345,14 +435,40 @@
     </div>
 
     <div id="profiles-sheet" class="overlay" hidden>
-      <div class="sheet wide"><h1>Profiles &amp; Exclusions</h1><div id="profiles-body"></div>
+      <div class="sheet wide"><h1>Profiles, Reference Roots &amp; Exclusions</h1>
+        <section id="reference-roots">
+          <h2>Immutable reference roots</h2>
+          <p>Master, archive, and backup folders remain visible for duplicate comparison, but CacheReaper will not quarantine or restore files inside them.</p>
+          <div id="reference-roots-body"></div>
+          <button id="reference-add" class="ghost">Add reference folder…</button>
+        </section>
+        <div id="profiles-body"></div>
         <div class="actions"><button id="profiles-close" class="primary">Done</button></div></div>
     </div>
 
     <div id="history-sheet" class="overlay" hidden>
-      <div class="sheet wide"><h1>Cleanup History</h1><p>Receipts are local records, not undo.</p>
-        <div id="history-body"></div><div class="actions"><button id="history-clear" class="danger">Clear History</button>
+      <div class="sheet wide"><h1>Action History</h1><p>Cache cleanup, Quarantine, and system Trash actions share one local audit timeline. Recovery availability is shown per action.</p>
+        <div id="history-body"></div><div class="actions"><button id="history-clear" class="danger">Clear Cleanup Receipts</button>
         <button id="history-close" class="primary">Done</button></div></div>
+    </div>
+
+    <div id="quarantine-sheet" class="overlay" hidden>
+      <div class="sheet wide"><h1>Quarantine</h1>
+        <p>Files here have not been deleted and have not freed disk space. Restore returns them to their original location.</p>
+        <div class="retention-row">
+          <label for="quarantine-retention">Permanent-expiry eligibility</label>
+          <select id="quarantine-retention">
+            <option value="never">Never</option>
+            <option value="7">After 7 days</option>
+            <option value="30">After 30 days</option>
+            <option value="90">After 90 days</option>
+            <option value="365">After 1 year</option>
+          </select>
+        </div>
+        <p class="fineprint">Nothing expires automatically. Eligibility only reveals a manually confirmed action, which revalidates another exact copy first.</p>
+        <div id="quarantine-body"></div>
+        <div class="actions"><button id="quarantine-close" class="primary">Done</button></div>
+      </div>
     </div>
 
     <div id="tooltip" hidden></div>
