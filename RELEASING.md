@@ -1,18 +1,18 @@
 # Releasing
 
-## 2.0.0 — Intelligent storage, with evidence
+## 2.1.0 — Rules that prove it
 
-Adds explicit Cache, Whole Disk, and All Files scan modes; exact duplicate proof;
-recoverable Trash and quarantine actions; immutable snapshots and incremental
-hashing; typed Ask and Plan workspaces; and bounded advanced intelligence for
-similar media, application ownership, project artifacts, forecasts, and
-anomalies. See `RELEASE_NOTES.md` for the complete user-facing notes.
+Adds rules for locations a path alone cannot judge: superseded editor
+extensions, idle Claude Code session temp folders, brag render intermediates,
+Adobe folders for uninstalled versions, and finished Codex worktrees. Each is
+proven when found and again before deletion, in the CLI and the desktop app.
+See `RELEASE_NOTES.md` for the complete user-facing notes.
 
 Tag it and push. The rest is CI.
 
 ```bash
-git tag -a --cleanup=verbatim v2.0.0 -F RELEASE_NOTES.md
-git push origin v2.0.0
+git tag -a --cleanup=verbatim v2.1.0 -F RELEASE_NOTES.md
+git push origin v2.1.0
 ```
 
 The tag message is not decoration: it becomes the release note shown inside the

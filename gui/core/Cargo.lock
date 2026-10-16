@@ -43,7 +43,7 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 
 [[package]]
 name = "cachereaper-core"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "image",
  "serde",

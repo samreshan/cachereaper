@@ -218,11 +218,11 @@ function browserStub() {
     open_privacy_settings: async () => {},
     set_seen_onboarding: async () => {},
     reveal: async () => {},
-    app_version: async () => "2.0.0-dev",
+    app_version: async () => "2.1.0-dev",
     set_auto_update: async () => {},
     update_check: async () =>
       pretendBehind
-        ? { version: "9.9.9", current: "2.0.0-dev", notes: "A pretend release, for working on this card." }
+        ? { version: "9.9.9", current: "2.1.0-dev", notes: "A pretend release, for working on this card." }
         : null,
     update_install: async () => {
       throw new Error("installing an update needs the desktop app");
