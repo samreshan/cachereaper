@@ -17,6 +17,7 @@ pub mod media;
 pub mod mode;
 pub mod offload;
 pub mod plan;
+pub mod proven;
 pub mod purge;
 pub mod quarantine;
 pub mod rules;

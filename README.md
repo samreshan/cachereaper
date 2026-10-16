@@ -354,7 +354,10 @@ VS Code and Electron app caches, and `Library/Caches/*`.
 
 Some locations cannot be judged by their path, so each of these rules carries a
 proof that runs when the path is found and again just before it is deleted.
-They are CLI-only for now; the desktop app does not claim them.
+The desktop app runs the same proofs, ported to Rust. It shows a finding only
+when the scanned folder contains it (`claude-code-tmp` needs a scan that
+covers `/tmp`), and it never deletes `adobe-orphaned`, because it cannot run as
+root.
 
 | rule | tier | claimed only when |
 | --- | --- | --- |

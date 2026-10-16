@@ -9,11 +9,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::guard::{home, matching_reference_root, validate_for_delete, Target};
+use crate::guard::{home, matching_reference_root, validate_for_delete_in, Target};
 use crate::history::{
     free_space, now_millis, signed_free_space_change, ReceiptHeader, ReceiptItem, ReceiptSummary,
     RECEIPT_SCHEMA,
 };
+use crate::proven::Locations;
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct PurgeResult {
@@ -59,21 +60,23 @@ pub fn purge(
     reference_roots: &[PathBuf],
     dry_run: bool,
 ) -> PurgeResult {
-    purge_to(
+    purge_in(
         targets,
         allowed,
         reference_roots,
         dry_run,
         &home().join(".cachereaper"),
+        &Locations::system(),
     )
 }
 
-fn purge_to(
+pub(crate) fn purge_in(
     targets: &[Target],
     allowed: &[PathBuf],
     reference_roots: &[PathBuf],
     dry_run: bool,
     audit_dir: &Path,
+    at: &Locations,
 ) -> PurgeResult {
     let mut result = PurgeResult::default();
     let mut receipt_skipped = 0usize;
@@ -131,7 +134,7 @@ fn purge_to(
     for target in targets {
         let why = matching_reference_root(&target.path, reference_roots)
             .map(|root| format!("reference root is immutable: {}", root.display()))
-            .unwrap_or_else(|| validate_for_delete(target, allowed));
+            .unwrap_or_else(|| validate_for_delete_in(target, allowed, at));
         if !why.is_empty() {
             receipt_skipped += 1;
             if why != "already gone" {
@@ -155,11 +158,16 @@ fn purge_to(
             continue;
         }
 
-        let outcome = if target.path.is_dir() {
-            std::fs::remove_dir_all(&target.path)
-        } else {
-            std::fs::remove_file(&target.path)
-        };
+        // a Codex worktree goes through `git worktree remove`, which also drops
+        // the main repo's record of it; everything else is a plain delete
+        let outcome = crate::proven::remove(&target.rule_id, &target.path).unwrap_or_else(|| {
+            if target.path.is_dir() {
+                std::fs::remove_dir_all(&target.path)
+            } else {
+                std::fs::remove_file(&target.path)
+            }
+            .map_err(|err| err.to_string())
+        });
         match outcome {
             Err(err) => {
                 receipt_skipped += 1;
@@ -167,7 +175,7 @@ fn purge_to(
                     .skipped
                     .push(format!("{}: {err}", target.path.display()));
                 if let Some(file) = log.as_mut() {
-                    let item = receipt_item(target, "skipped", &err.to_string());
+                    let item = receipt_item(target, "skipped", &err);
                     if let Err(error) = write_line(file, &item) {
                         result.audit_error = Some(error.to_string());
                         result.skipped.push(format!("audit append failed: {error}"));
@@ -235,6 +243,17 @@ fn receipt_item(target: &Target, status: &str, reason: &str) -> ReceiptItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn purge_to(
+        targets: &[Target],
+        allowed: &[PathBuf],
+        reference_roots: &[PathBuf],
+        dry_run: bool,
+        audit_dir: &Path,
+    ) -> PurgeResult {
+        let at = Locations::system();
+        purge_in(targets, allowed, reference_roots, dry_run, audit_dir, &at)
+    }
 
     fn fixture() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
