@@ -539,6 +539,17 @@
       "os": "macos"
     },
     {
+      "id": "google-updater-crx",
+      "tier": "low",
+      "glob": "Library/Application Support/Google/GoogleUpdater/crx_cache",
+      "label": "Google Updater downloaded update packages",
+      "regen": "re-downloaded by the next update",
+      "children": false,
+      "warn": "",
+      "system": false,
+      "os": "macos"
+    },
+    {
       "id": "npm-cache-win",
       "tier": "low",
       "glob": "AppData/Local/npm-cache",
@@ -1054,6 +1065,17 @@
       "warn": "requires sudo; may be in active use",
       "system": true,
       "os": "macos"
+    },
+    {
+      "id": "simulator-dyld",
+      "tier": "low",
+      "glob": "/Library/Developer/CoreSimulator/Caches/dyld",
+      "label": "simulator dyld shared caches",
+      "regen": "rebuilt when a simulator next boots (slow first boot)",
+      "children": false,
+      "warn": "requires sudo",
+      "system": true,
+      "os": "macos"
     }
   ],
   "artifacts": [
@@ -1442,6 +1464,63 @@
         "pyvenv.cfg"
       ],
       "need_gitignored": false
+    }
+  ],
+  "proven": [
+    {
+      "id": "vscode-obsolete-ext",
+      "tier": "low",
+      "label": "superseded editor extension versions",
+      "regen": "n/a - the current version stays installed",
+      "proof": "listed in the editor's extensions/.obsolete and not in its extensions.json",
+      "dir_name": "",
+      "warn": "",
+      "system": false,
+      "os": "any"
+    },
+    {
+      "id": "claude-code-tmp",
+      "tier": "medium",
+      "label": "Claude Code session scratch + tool output",
+      "regen": "n/a - a session makes a new one when it runs",
+      "proof": "a session-id folder in /tmp/claude-<uid>/<project>/ that is yours and has had nothing written to it for 7 days",
+      "dir_name": "",
+      "warn": "a resumed session loses its scratchpad and old task output",
+      "system": false,
+      "os": "macos"
+    },
+    {
+      "id": "brag-work",
+      "tier": "medium",
+      "label": "brag video intermediates (frames, master)",
+      "regen": "re-run /brag to render again",
+      "proof": "the work/ folder of a brag-output* folder holding brag-plan.md and a finished .mp4; the finished video is never claimed",
+      "dir_name": "work",
+      "warn": "",
+      "system": false,
+      "os": "any"
+    },
+    {
+      "id": "adobe-orphaned",
+      "tier": "medium",
+      "label": "Adobe support folders for uninstalled versions",
+      "regen": "reinstalling that version from Creative Cloud recreates it",
+      "proof": "an `Adobe <product> <version>` folder whose version is not in /Applications, where a sibling folder matching an installed version proves how the product names them",
+      "dir_name": "",
+      "warn": "requires sudo",
+      "system": true,
+      "os": "macos"
+    },
+    {
+      "id": "codex-worktree",
+      "tier": "high",
+      "label": "finished Codex worktrees",
+      "regen": "git worktree add <path> <branch> (every commit is on a remote)",
+      "proof": "a linked git worktree in ~/.codex/worktrees with a clean `git status` and no commit missing from a remote",
+      "dir_name": "",
+      "warn": "removed with `git worktree remove`, not rm; git-ignored files in it (.env, node_modules) go with it, and the Codex thread loses its checkout",
+      "system": false,
+      "os": "any"
     }
   ]
 }

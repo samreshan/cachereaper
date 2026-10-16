@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -368,6 +369,364 @@ class TestStaticRuleSanity(unittest.TestCase):
             base = Path("/") if rule.glob.startswith("/") else cr.HOME
             probe = base / rule.glob.lstrip("/")
             self.assertEqual(cr.path_is_protected(probe), "", rule.id)
+
+
+class TestNewStaticRules(unittest.TestCase):
+    def rule(self, rule_id):
+        return next(r for r in cr.STATIC_RULES if r.id == rule_id)
+
+    def test_system_simulator_dyld_cache(self):
+        rule = self.rule("simulator-dyld")
+        self.assertEqual(rule.glob, "/Library/Developer/CoreSimulator/Caches/dyld")
+        self.assertEqual((rule.tier, rule.system, rule.os), ("low", True, "macos"))
+
+    def test_google_updater_crx_cache(self):
+        rule = self.rule("google-updater-crx")
+        self.assertEqual((rule.tier, rule.system, rule.os), ("low", False, "macos"))
+        self.assertTrue(rule.glob.endswith("GoogleUpdater/crx_cache"))
+
+    def test_static_globs_only_use_whole_component_wildcards(self):
+        # The GUI's glob expander only understands `*` as an entire component;
+        # `claude-*` would be looked up literally there and silently find nothing.
+        for rule in cr.STATIC_RULES:
+            for part in rule.glob.split("/"):
+                if "*" in part or "?" in part or "[" in part:
+                    self.assertEqual(part, "*", rule.id)
+
+    def test_simulator_runtime_is_a_vendor_command_not_a_rule(self):
+        commands = " ".join(cmd for _, cmd, _ in cr.TOOL_COMMANDS)
+        self.assertIn("xcrun simctl runtime delete", commands)
+        for rule in cr.STATIC_RULES:
+            self.assertNotIn("AssetsV2", rule.glob, "SIP-protected; rm cannot remove it")
+
+    def test_onedrive_cache_stays_behind_the_cloud_guard(self):
+        cdn = cr.HOME / "Library/Application Support/OneDrive/settings/ListSync/cdn"
+        self.assertIn("cloud-sync", cr.path_is_protected(cdn))
+        for rule in cr.STATIC_RULES:
+            self.assertNotIn("OneDrive", rule.glob, rule.id)
+
+
+class ProvenRuleCase(unittest.TestCase):
+    """A temporary HOME and log dir, so nothing here sees the real machine."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.saved = {name: getattr(cr, name) for name in
+                      ("HOME", "LOG_DIR", "CLAUDE_TMP_BASE", "APPLICATIONS", "ADOBE_SUPPORT")}
+        cr.HOME = self.home
+        cr.LOG_DIR = self.tmp / ".cachereaper"
+        # every finder runs on each discover_proven call; none may see the real machine
+        cr.CLAUDE_TMP_BASE = self.tmp / "private-tmp"
+        cr.APPLICATIONS = self.tmp / "Applications"
+        cr.ADOBE_SUPPORT = self.tmp / "Library" / "Application Support" / "Adobe"
+
+    def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(cr, name, value)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def found(self, rule_id, include_system=False):
+        return {c.path for c in cr.discover_proven(include_system) if c.rule_id == rule_id}
+
+    def validate(self, path, rule_id):
+        rule = cr.PROVEN_BY_ID[rule_id]
+        c = cr.Candidate(path=path, rule_id=rule.id, tier=rule.tier, label=rule.label,
+                         regen=rule.regen, source="proven")
+        return cr.validate_for_delete(c, [self.tmp]), c
+
+
+class TestObsoleteEditorExtensions(ProvenRuleCase):
+    def setUp(self):
+        super().setUp()
+        self.ext = self.home / ".vscode" / "extensions"
+        for name in ("pub.a-1.0.0", "pub.a-1.1.0", "pub.b-2.0.0-darwin-arm64", "pub.c-0.9.0"):
+            write(self.ext / name / "package.json", 0)
+        (self.ext / ".obsolete").write_text(json.dumps({
+            "pub.a-1.0.0": True,
+            "pub.b-2.0.0-darwin-arm64": True,   # reinstalled since: extensions.json has it
+            "pub.gone-0.1.0": True,             # already deleted by VS Code
+            "../escape": True,
+        }))
+        self.write_installed("pub.a-1.1.0", "pub.b-2.0.0-darwin-arm64", "pub.c-0.9.0")
+
+    def write_installed(self, *names):
+        (self.ext / "extensions.json").write_text(json.dumps(
+            [{"identifier": {"id": n.rsplit("-", 1)[0]}, "relativeLocation": n} for n in names]))
+
+    def test_claims_only_entries_named_in_obsolete_and_not_installed(self):
+        self.assertEqual(self.found("vscode-obsolete-ext"), {self.ext / "pub.a-1.0.0"})
+
+    def test_older_looking_versions_are_not_inferred(self):
+        # pub.c-0.9.0 is older than everything here and still is not claimed
+        self.assertNotIn(self.ext / "pub.c-0.9.0", self.found("vscode-obsolete-ext"))
+
+    def test_without_extensions_json_nothing_is_claimed(self):
+        (self.ext / "extensions.json").unlink()
+        self.assertEqual(self.found("vscode-obsolete-ext"), set())
+
+    def test_malformed_obsolete_claims_nothing(self):
+        (self.ext / ".obsolete").write_text("{not json")
+        self.assertEqual(self.found("vscode-obsolete-ext"), set())
+
+    def test_reinstall_after_scan_blocks_delete(self):
+        target = self.ext / "pub.a-1.0.0"
+        self.assertEqual(self.validate(target, "vscode-obsolete-ext")[0], "")
+        self.write_installed("pub.a-1.0.0", "pub.a-1.1.0")
+        why, c = self.validate(target, "vscode-obsolete-ext")
+        self.assertIn("no longer proven", why)
+        cr.delete([c], dry_run=False, allowed=[self.tmp])
+        self.assertTrue(target.exists())
+
+    def test_delete_keeps_the_current_version(self):
+        cands = cr.discover_proven(False)
+        _, removed, errors = cr.delete(cands, dry_run=False, allowed=[self.tmp])
+        self.assertEqual((removed, errors), (1, []))
+        self.assertFalse((self.ext / "pub.a-1.0.0").exists())
+        self.assertTrue((self.ext / "pub.a-1.1.0" / "package.json").exists())
+
+
+@unittest.skipUnless(cr.PLATFORM == "macos", "the rule is only verified against macOS")
+class TestClaudeSessionTemp(ProvenRuleCase):
+    SESSION = "6b217802-85e8-4bac-9408-2790915c0050"
+
+    def setUp(self):
+        super().setUp()
+        self.root = cr.CLAUDE_TMP_BASE / f"claude-{os.getuid()}"
+        self.project = self.root / "-Users-someone-Programming-demo"
+        self.stale = self.project / self.SESSION
+        self.live = self.project / "26cdb326-4424-4cf3-ba0d-cd41bc0bc564"
+        self.other = self.root / "bash-edit-diff" / "1234-5678-abcd"
+        write(self.stale / "tasks" / "b1.output")
+        write(self.stale / "scratchpad" / "notes.txt", 0)
+        write(self.live / "tasks" / "b2.output")
+        write(self.other / "blob")
+        write(self.root / f"cache-break-state-{self.SESSION}.json", 0)
+        for path in (self.stale, self.other, self.root / f"cache-break-state-{self.SESSION}.json"):
+            self.age(path, days=cr.CLAUDE_TMP_STALE_DAYS + 1)
+
+    @staticmethod
+    def age(path, days):
+        old = time.time() - days * 86400
+        if path.is_file():
+            os.utime(path, (old, old))
+            return
+        for dirpath, dirnames, filenames in os.walk(path, topdown=False):
+            for name in filenames + dirnames:
+                os.utime(os.path.join(dirpath, name), (old, old))
+            os.utime(dirpath, (old, old))
+
+    def test_claims_only_stale_session_folders(self):
+        self.assertEqual(self.found("claude-code-tmp"), {self.stale})
+
+    def test_a_recent_write_anywhere_inside_protects_the_session(self):
+        (self.stale / "tasks" / "b1.output").write_text("still running")
+        self.assertEqual(self.found("claude-code-tmp"), set())
+
+    def test_a_symlinked_root_is_not_followed(self):
+        # /tmp is shared: a claude-<uid> planted by someone else, pointing into
+        # your files, must not turn them into candidates
+        shutil.rmtree(self.root)
+        self.root.symlink_to(self.home, target_is_directory=True)
+        victim = self.home / "proj" / self.SESSION
+        write(victim / "thesis.tex")
+        self.age(victim, days=30)
+        self.assertEqual(self.found("claude-code-tmp"), set())
+
+    def test_temp_root_is_an_allowed_delete_root(self):
+        args = cr.build_parser().parse_args(["clean", "--tier", "medium"])
+        self.assertIn(self.root, cr.allowed_roots_for(args))
+        c = next(c for c in cr.discover_proven(False) if c.rule_id == "claude-code-tmp")
+        self.assertEqual(cr.validate_for_delete(c, cr.allowed_roots_for(args)), "")
+
+    def test_session_woken_after_scan_is_skipped_at_delete(self):
+        c = next(c for c in cr.discover_proven(False) if c.rule_id == "claude-code-tmp")
+        (self.stale / "tasks" / "b3.output").write_text("resumed")
+        _, removed, errors = cr.delete([c], dry_run=False, allowed=[self.tmp])
+        self.assertEqual(removed, 0)
+        self.assertIn("no longer proven", errors[0])
+        self.assertTrue(self.stale.exists())
+
+
+@unittest.skipUnless(shutil.which("git"), "git not installed")
+class TestCodexWorktrees(ProvenRuleCase):
+    def git(self, cwd, *args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+             "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+             "-c", "init.defaultBranch=main", "-C", str(cwd), *args],
+            check=True, capture_output=True,
+        )
+
+    def setUp(self):
+        super().setUp()
+        self.origin = self.tmp / "origin.git"
+        self.main = self.tmp / "repo"
+        self.git(self.tmp, "init", "-q", "--bare", str(self.origin))
+        self.git(self.tmp, "init", "-q", str(self.main))
+        (self.main / "app.py").write_text("print('hi')\n")
+        (self.main / ".gitignore").write_text("node_modules/\n")
+        self.git(self.main, "add", ".")
+        self.git(self.main, "commit", "-q", "-m", "init")
+        self.git(self.main, "remote", "add", "origin", str(self.origin))
+        self.git(self.main, "push", "-q", "origin", "HEAD:refs/heads/main")
+        self.git(self.main, "fetch", "-q", "origin")
+        self.wt = self.home / ".codex" / "worktrees" / "02fc" / "repo"
+        self.git(self.main, "worktree", "add", "-q", "--detach", str(self.wt))
+        write(self.wt / "node_modules" / "pkg" / "blob")
+
+    def test_clean_pushed_worktree_is_claimed(self):
+        self.assertEqual(self.found("codex-worktree"), {self.wt})
+        self.assertEqual(cr.PROVEN_BY_ID["codex-worktree"].tier, "high")
+
+    def test_untracked_file_blocks_the_claim(self):
+        (self.wt / "draft.md").write_text("not committed")
+        self.assertEqual(self.found("codex-worktree"), set())
+
+    def test_modified_tracked_file_blocks_the_claim(self):
+        (self.wt / "app.py").write_text("print('changed')\n")
+        self.assertEqual(self.found("codex-worktree"), set())
+
+    def test_unpushed_commit_blocks_the_claim(self):
+        (self.wt / "new.py").write_text("x = 1\n")
+        self.git(self.wt, "add", "new.py")
+        self.git(self.wt, "commit", "-q", "-m", "local only")
+        self.assertEqual(self.found("codex-worktree"), set())
+
+    def test_repo_without_a_remote_never_qualifies(self):
+        self.git(self.main, "remote", "remove", "origin")
+        self.assertEqual(self.found("codex-worktree"), set())
+
+    def test_a_full_clone_is_not_a_worktree(self):
+        clone = self.home / ".codex" / "worktrees" / "9308" / "clone"
+        clone.parent.mkdir(parents=True)
+        self.git(self.tmp, "clone", "-q", str(self.origin), str(clone))
+        self.assertNotIn(clone, self.found("codex-worktree"))
+
+    def test_removal_goes_through_git_worktree_remove(self):
+        cands = [c for c in cr.discover_proven(False) if c.rule_id == "codex-worktree"]
+        _, removed, errors = cr.delete(cands, dry_run=False, allowed=[self.tmp])
+        self.assertEqual((removed, errors), (1, []))
+        self.assertFalse(self.wt.exists())
+        listed = subprocess.run(["git", "-C", str(self.main), "worktree", "list", "--porcelain"],
+                                capture_output=True, text=True, check=True).stdout
+        self.assertNotIn("02fc", listed, "rm would leave the main repo listing a missing worktree")
+        self.assertTrue((self.main / "app.py").exists())
+
+    def test_edit_after_scan_is_refused_at_delete(self):
+        cands = [c for c in cr.discover_proven(False) if c.rule_id == "codex-worktree"]
+        (self.wt / "app.py").write_text("print('late edit')\n")
+        _, removed, errors = cr.delete(cands, dry_run=False, allowed=[self.tmp])
+        self.assertEqual(removed, 0)
+        self.assertIn("no longer proven", errors[0])
+        self.assertEqual((self.wt / "app.py").read_text(), "print('late edit')\n")
+
+
+@unittest.skipUnless(cr.PLATFORM == "macos", "Adobe leftovers are a macOS rule")
+class TestOrphanedAdobeFolders(ProvenRuleCase):
+    def setUp(self):
+        super().setUp()
+        self.app("Adobe Illustrator 2025", "Adobe Illustrator.app", "29.0.1")
+        self.app("Adobe Photoshop 2023", "Adobe Photoshop 2023.app", "24.0.0")
+        for name in ("Adobe Illustrator 28", "Adobe Illustrator 29", "Adobe Photoshop 2023",
+                     "Adobe Photoshop 2024", "Adobe InDesign 2020", "CEP", "SLStore",
+                     "backup20240808T183841", "Adobe Desktop Common"):
+            write(cr.ADOBE_SUPPORT / name / "blob", 0)
+
+    def app(self, folder, bundle, version):
+        import plistlib
+        plist = cr.APPLICATIONS / folder / bundle / "Contents" / "Info.plist"
+        plist.parent.mkdir(parents=True)
+        with plist.open("wb") as fh:
+            plistlib.dump({"CFBundleShortVersionString": version}, fh)
+
+    def test_claims_versions_whose_app_is_gone_under_either_naming(self):
+        self.assertEqual(self.found("adobe-orphaned", include_system=True), {
+            cr.ADOBE_SUPPORT / "Adobe Illustrator 28",   # by major version: 29 is installed
+            cr.ADOBE_SUPPORT / "Adobe Photoshop 2024",   # by year: 2023 is installed
+        })
+
+    def test_only_with_system_scope(self):
+        self.assertEqual(self.found("adobe-orphaned", include_system=False), set())
+
+    def test_naming_is_not_assumed_without_a_matching_sibling(self):
+        # With no folder for the installed Illustrator 29, nothing proves that
+        # Illustrator names its folders by major version.
+        shutil.rmtree(cr.ADOBE_SUPPORT / "Adobe Illustrator 29")
+        self.assertNotIn(cr.ADOBE_SUPPORT / "Adobe Illustrator 28",
+                         self.found("adobe-orphaned", include_system=True))
+
+    def test_product_not_installed_at_all_is_left_alone(self):
+        self.assertNotIn(cr.ADOBE_SUPPORT / "Adobe InDesign 2020",
+                         self.found("adobe-orphaned", include_system=True))
+
+    def test_reinstalling_the_version_blocks_delete(self):
+        target = cr.ADOBE_SUPPORT / "Adobe Illustrator 28"
+        self.assertEqual(self.validate(target, "adobe-orphaned")[0], "")
+        self.app("Adobe Illustrator 2024", "Adobe Illustrator.app", "28.7.1")
+        self.assertIn("no longer proven", self.validate(target, "adobe-orphaned")[0])
+
+
+class TestBragIntermediates(ProvenRuleCase):
+    def setUp(self):
+        super().setUp()
+        self.out = self.home / "proj" / "brag-output-2026-09-26-221544"
+        write(self.out / "brag-plan.md", 0)
+        write(self.out / "share-copy.txt", 0)
+        write(self.out / "launch.mp4")
+        write(self.out / "work" / "frames" / "0001.png")
+        write(self.out / "work" / "master_crf17.mp4")
+
+    def scan(self):
+        return {c.path: c for c in cr.discover_projects([self.home], 10, None)
+                if c.rule_id == "brag-work"}
+
+    def test_claims_work_and_never_the_finished_video(self):
+        self.assertEqual(set(self.scan()), {self.out / "work"})
+        _, removed, errors = cr.delete(list(self.scan().values()), dry_run=False,
+                                       allowed=[self.tmp])
+        self.assertEqual((removed, errors), (1, []))
+        self.assertFalse((self.out / "work").exists())
+        for kept in ("launch.mp4", "brag-plan.md", "share-copy.txt"):
+            self.assertTrue((self.out / kept).exists(), kept)
+
+    def test_unfinished_render_is_not_claimed(self):
+        (self.out / "launch.mp4").unlink()
+        self.assertEqual(self.scan(), {})
+
+    def test_work_needs_a_brag_output_parent_and_plan(self):
+        other = self.home / "proj" / "notes"
+        write(other / "brag-plan.md", 0)
+        write(other / "talk.mp4")
+        write(other / "work" / "draft.txt")
+        (self.out / "brag-plan.md").unlink()
+        self.assertEqual(self.scan(), {})
+
+
+class TestProvenRulesStayOutOfTheGui(unittest.TestCase):
+    def test_proven_rules_are_listed_apart_from_globs_and_markers(self):
+        doc = cr.rules_document()
+        self.assertEqual(doc["schema"], 2, "the GUI asserts the schema number")
+        proven = {r["id"] for r in doc["proven"]}
+        self.assertEqual(proven, set(cr.PROVEN_BY_ID))
+        # the GUI applies these lists with nothing but a glob or a marker
+        self.assertFalse(proven & {r["id"] for r in doc["static"]})
+        self.assertFalse(proven & {r["id"] for r in doc["artifacts"]})
+        for rule in doc["proven"]:
+            self.assertTrue(rule["proof"], rule["id"])
+
+    def test_every_proven_rule_can_prove_and_be_found(self):
+        for rule in cr.PROVEN_RULES:
+            self.assertIn(rule.tier, cr.TIER_ORDER, rule.id)
+            self.assertTrue(rule.label and rule.regen and rule.proof, rule.id)
+            self.assertTrue(callable(rule.prove), rule.id)
+            self.assertTrue(callable(rule.find) or rule.dir_name, rule.id)
+
+    def test_generated_copy_is_current(self):
+        committed = Path(__file__).resolve().parent.parent / "gui" / "rules.generated.json"
+        self.assertEqual(json.loads(committed.read_text(encoding="utf-8")), cr.rules_document(),
+                         "run: python3 cachereaper.py dump-rules > gui/rules.generated.json")
 
 
 class TestSavedExclusions(unittest.TestCase):

@@ -348,8 +348,21 @@ by hand, before they can start doing this themselves.
 
 ~55 known cache locations: npm, yarn, pnpm, bun, pip, uv, poetry, cargo, go,
 gradle, maven, NuGet, composer, CocoaPods, SwiftPM, deno, Homebrew, Playwright,
-Puppeteer, Prisma, Xcode DerivedData and archives, CoreSimulator, VS Code and
-Electron app caches, and `Library/Caches/*`.
+Puppeteer, Prisma, Xcode DerivedData and archives, CoreSimulator (including the
+system-wide simulator dyld caches, with `--system`), Google Updater downloads,
+VS Code and Electron app caches, and `Library/Caches/*`.
+
+Some locations cannot be judged by their path, so each of these rules carries a
+proof that runs when the path is found and again just before it is deleted.
+They are CLI-only for now; the desktop app does not claim them.
+
+| rule | tier | claimed only when |
+| --- | --- | --- |
+| `vscode-obsolete-ext` | low | VS Code (or Insiders/Cursor) lists the folder in `extensions/.obsolete` and not in `extensions.json` — versions are never compared |
+| `claude-code-tmp` | medium | a session folder in `/tmp/claude-<uid>/<project>/` that you own and nothing has written to for 7 days |
+| `brag-work` | medium | `work/` inside `brag-output*/`, beside `brag-plan.md` and a finished `.mp4` (which is kept) |
+| `adobe-orphaned` | medium | `--system`: an `Adobe <product> <version>` folder whose version is not in `/Applications`, when a sibling folder matching an installed version proves how that product names them |
+| `codex-worktree` | high | a linked worktree in `~/.codex/worktrees` with a clean `git status` and every commit on a remote; removed with `git worktree remove` |
 
 Plus project build artifacts, each gated on a marker so a directory is never
 claimed on its name alone:
@@ -367,7 +380,8 @@ claimed on its name alone:
 
 ## Safety
 
-1. **Confined to `$HOME`** plus roots you pass explicitly. `--system` needs root.
+1. **Confined to `$HOME`** plus roots you pass explicitly, and your own
+   `/tmp/claude-<uid>`. `--system` needs root.
 2. **Hard-blocked components**, re-checked before every delete: `.git`, `.ssh`,
    `.gnupg`, `Keychains`, `Mobile Documents`, `*.photoslibrary`, and anything
    under OneDrive / Google Drive / Dropbox / iCloud / Nextcloud.
@@ -383,7 +397,10 @@ claimed on its name alone:
 7. **High risk requires typing a phrase**, not just `y`.
 
 Where a vendor command is safer than `rm -rf` — Docker, Colima, rustup, simctl,
-Time Machine snapshots — `cachereaper tools` prints the command instead.
+Time Machine snapshots — `cachereaper tools` prints the command instead. The same
+goes for what no rule may touch: simulator runtimes in SIP-protected
+`/System/Library/AssetsV2` (only `xcrun simctl runtime delete` removes them), and
+OneDrive's Lists cache, which sits behind the cloud-sync guard.
 
 Cleanup History is local, has no telemetry or network submission, and is kept
 until explicitly cleared. Receipts are an audit trail, not undo; deletion is

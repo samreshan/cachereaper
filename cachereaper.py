@@ -11,6 +11,8 @@ Design rules:
     pyvenv.cfg, build/ that git already ignores...).
   * Stateful things (VM disks, chat history, source, cloud-sync folders, .git,
     keys) are never rules and are additionally blocked by a path guard.
+  * Where a location cannot say what it is by name alone, its rule carries a
+    proof that runs when the path is found and again right before it is deleted.
 
 No third-party dependencies. Python 3.9+.
 """
@@ -20,7 +22,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -172,6 +176,8 @@ STATIC_RULES = [
       "service worker cache", "rebuilt on launch", os="macos"),
     S("container-cache", "low", "Library/Containers/*/Data/Library/Caches",
       "sandboxed app cache", "rebuilt on launch", os="macos"),
+    S("google-updater-crx", "low", "Library/Application Support/Google/GoogleUpdater/crx_cache",
+      "Google Updater downloaded update packages", "re-downloaded by the next update", os="macos"),
 
     # --- Windows: package managers -----------------------------------------
     # Everything Windows keeps lives under AppData, split between Local (this
@@ -271,6 +277,12 @@ STATIC_RULES = [
       warn="requires sudo; some entries are in use"),
     S("tmp-folders", "high", "/private/var/folders/*/*/C", "per-user temp caches",
       "rebuilt by macOS", system=True, os="macos", warn="requires sudo; may be in active use"),
+    # The per-user simulator-caches rule above does not reach this one: since
+    # Xcode 15 the host builds each runtime's dyld shared cache here, per macOS
+    # build, and a runtime or macOS update leaves the old one behind.
+    S("simulator-dyld", "low", "/Library/Developer/CoreSimulator/Caches/dyld",
+      "simulator dyld shared caches", "rebuilt when a simulator next boots (slow first boot)",
+      system=True, os="macos", warn="requires sudo"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -365,6 +377,15 @@ TOOL_COMMANDS = [
     ("Gradle", "./gradlew --stop && rm -rf ~/.gradle/caches", ""),
     ("Rust", "rustup toolchain list && rustup toolchain uninstall <old>", "keeps the active toolchain"),
     ("Xcode", "xcrun simctl delete unavailable", "removes simulators for uninstalled runtimes"),
+    # A downloaded runtime sits in /System/Library/AssetsV2, which SIP protects
+    # from rm even as root, so there is no rule for it - only simctl can remove
+    # one, and simctl ships with Xcode, not the Command Line Tools.
+    ("Xcode", "xcrun simctl runtime list && xcrun simctl runtime delete <id>",
+     "simulator runtimes (GBs each); needs Xcode installed and selected"),
+    # The cloud-sync guard blocks every path with a OneDrive component, and this
+    # one is not worth loosening it for.
+    ("OneDrive", "quit OneDrive, then rm -rf ~/Library/Application\\ Support/OneDrive/settings/ListSync/cdn",
+     "Microsoft Lists CDN cache; cachereaper will not delete under a OneDrive folder itself"),
     ("Flutter", "flutter clean", "per-project"),
 ]
 
@@ -513,7 +534,7 @@ class Candidate:
     label: str
     regen: str
     warn: str = ""
-    source: str = "static"      # static | project
+    source: str = "static"      # static | project | proven
     expect_name: str = ""
     size: int = 0
     mtime: float = 0.0
@@ -703,6 +724,14 @@ def discover_projects(roots: list[Path], max_depth: int, progress, excluded_path
                         ))
                     continue  # never descend into an artifact
 
+                proven = match_proven_dir(name, path)
+                if proven:
+                    out.append(Candidate(
+                        path=path, rule_id=proven.id, tier=proven.tier, label=proven.label,
+                        regen=proven.regen, warn=proven.warn, source="proven",
+                    ))
+                    continue
+
                 if name.startswith(".") and name not in HIDDEN_ARTIFACTS:
                     continue
                 if depth < max_depth:
@@ -713,6 +742,442 @@ def discover_projects(roots: list[Path], max_depth: int, progress, excluded_path
             path=path, rule_id=rule.id, tier=rule.tier,
             label=rule.label, regen=rule.regen, source="project",
         ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# discovery: proven locations
+# ---------------------------------------------------------------------------
+#
+# A static rule is true of everything its glob matches. These are not: an old
+# VS Code extension looks exactly like the current one until .obsolete names it,
+# and a Codex worktree is disposable only while git says nothing in it would be
+# lost. Each rule here carries a `prove` that answers for one path — "" when it
+# holds, otherwise why not — and it runs when the path is found and again in
+# validate_for_delete, because any of these can stop being true in between.
+#
+# They stay out of the generated table's `static` and `artifacts` lists on
+# purpose. The GUI applies those with a glob and a marker and nothing else, so a
+# rule placed there would be claimed in the GUI without its proof. `dump-rules`
+# lists them under `proven`, which the GUI does not read: it finds less, never
+# more.
+
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _read_json(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _is_real_dir(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _child_dirs(path: Path) -> list[Path]:
+    try:
+        return sorted(p for p in path.iterdir() if _is_real_dir(p))
+    except OSError:
+        return []
+
+
+# --- superseded editor extensions ------------------------------------------
+#
+# When VS Code updates an extension it installs the new version beside the old
+# one and records the old directory's name in extensions/.obsolete, deleting it
+# itself on some later launch. That file is the proof. Nothing is inferred from
+# version numbers: pre-release builds and platform suffixes make "older"
+# unreliable, and an editor rolled back to a pinned version would be wrong.
+
+EDITOR_EXTENSION_DIRS = (".vscode/extensions", ".vscode-insiders/extensions", ".cursor/extensions")
+
+
+def prove_obsolete_extension(path: Path) -> str:
+    ext_dir = path.parent
+    if not any(ext_dir == HOME / rel for rel in EDITOR_EXTENSION_DIRS):
+        return "not in an editor extensions folder"
+    if not _is_real_dir(path):
+        return "not a directory"
+    obsolete = _read_json(ext_dir / ".obsolete")
+    if not isinstance(obsolete, dict) or obsolete.get(path.name) is not True:
+        return "not listed in .obsolete"
+    # The editor's own list of what is installed. Without it there is no way to
+    # rule out an entry the editor has since reinstalled, so its absence is a no.
+    installed = _read_json(ext_dir / "extensions.json")
+    if not isinstance(installed, list):
+        return "extensions.json unreadable"
+    for entry in installed:
+        if isinstance(entry, dict) and entry.get("relativeLocation") == path.name:
+            return "still listed as installed in extensions.json"
+    return ""
+
+
+def find_obsolete_extensions() -> list[Path]:
+    out = []
+    for rel in EDITOR_EXTENSION_DIRS:
+        ext_dir = HOME / rel
+        obsolete = _read_json(ext_dir / ".obsolete")
+        if not isinstance(obsolete, dict):
+            continue
+        for name in sorted(obsolete):
+            # a key is a directory name, never a path out of the folder
+            if not isinstance(name, str) or name != Path(name).name or name.startswith("."):
+                continue
+            if (ext_dir / name).exists():
+                out.append(ext_dir / name)
+    return out
+
+
+# --- Claude Code session temp folders ---------------------------------------
+#
+# Claude Code keeps each session's scratchpad and background-task output under
+# /tmp/claude-<uid>/<project>/<session-id>/. A running session writes there, but
+# nothing records which sessions are still running, so the proof is time: a
+# session folder nothing has written to for a week is not in use.
+
+CLAUDE_TMP_BASE = Path("/private/tmp")
+CLAUDE_TMP_STALE_DAYS = 7
+
+
+def claude_tmp_root() -> Path | None:
+    if not hasattr(os, "getuid"):
+        return None
+    return CLAUDE_TMP_BASE / f"claude-{os.getuid()}"
+
+
+def _touched_since(path: Path, cutoff: float) -> bool:
+    """True as soon as anything at or under `path` has an mtime after `cutoff`."""
+    stack = [str(path)]
+    while stack:
+        d = stack.pop()
+        try:
+            if os.lstat(d).st_mtime > cutoff:
+                return True
+            it = os.scandir(d)
+        except OSError:
+            return True  # cannot see all of it, so cannot say it is idle
+        with it:
+            for entry in it:
+                try:
+                    est = entry.stat(follow_symlinks=False)
+                except OSError:
+                    return True
+                if est.st_mtime > cutoff:
+                    return True
+                if stat.S_ISDIR(est.st_mode):
+                    stack.append(entry.path)
+    return False
+
+
+def _own_real_dir(path: Path) -> bool:
+    try:
+        st = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+
+
+def prove_stale_claude_session(path: Path) -> str:
+    root = claude_tmp_root()
+    if root is None or path.parent.parent != root:
+        return "not a session folder in this user's claude temp dir"
+    if not UUID_RE.match(path.name):
+        return "not named for a session"
+    # /tmp is shared: anyone can create a claude-<uid> there first, or a symlink
+    # by that name pointing into your home. Every level has to be a real
+    # directory that you own before anything under it is offered.
+    if not all(_own_real_dir(p) for p in (root, path.parent, path)):
+        return "not a directory you own"
+    if _touched_since(path, time.time() - CLAUDE_TMP_STALE_DAYS * 86400):
+        return f"written to within {CLAUDE_TMP_STALE_DAYS} days; the session may be running"
+    return ""
+
+
+def find_claude_sessions() -> list[Path]:
+    root = claude_tmp_root()
+    if root is None or not _own_real_dir(root):
+        return []
+    return [session for project in _child_dirs(root) for session in _child_dirs(project)
+            if UUID_RE.match(session.name)]
+
+
+# --- finished Codex worktrees ----------------------------------------------
+#
+# Codex runs each task in a linked git worktree under
+# ~/.codex/worktrees/<slug>/<repo>. One is disposable when git itself says it
+# holds nothing: a clean `git status` and no commit that is not on a remote.
+# A repo with no remote has nowhere to have pushed to, so it never qualifies.
+# Removal goes through `git worktree remove`, which also drops the main repo's
+# record of it and refuses on its own if the worktree got dirty after the scan.
+
+def _git(path: Path, *args: str):
+    try:
+        return subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(path), *args],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _worktree_main(path: Path) -> Path | None:
+    """The main checkout a linked worktree belongs to, read from its .git file."""
+    marker = path / ".git"
+    try:
+        if not stat.S_ISREG(marker.lstat().st_mode):
+            return None  # a .git directory is a whole repository, not a worktree
+        text = marker.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    gitdir = Path(text[len("gitdir:"):].strip())
+    if not gitdir.is_absolute():
+        gitdir = path / gitdir
+    if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+        return None
+    main = gitdir.parent.parent.parent
+    return main if _is_real_dir(main / ".git") else None
+
+
+def prove_finished_codex_worktree(path: Path) -> str:
+    if path.parent.parent != HOME / ".codex" / "worktrees":
+        return "not in ~/.codex/worktrees"
+    if not _is_real_dir(path):
+        return "not a directory"
+    if _worktree_main(path) is None:
+        return "not a linked git worktree"
+    # Spelled out so a user's status.showUntrackedFiles or diff.ignoreSubmodules
+    # cannot hide anything from the check.
+    status = _git(path, "status", "--porcelain", "--untracked-files=normal",
+                  "--ignore-submodules=none")
+    if status is None or status.returncode != 0:
+        return "git status failed"
+    if status.stdout.strip():
+        return "has uncommitted or untracked changes"
+    ahead = _git(path, "rev-list", "--count", "HEAD", "--not", "--remotes")
+    if ahead is None or ahead.returncode != 0:
+        return "cannot tell what is pushed"
+    if ahead.stdout.strip() != "0":
+        return "has commits that are on no remote"
+    return ""
+
+
+def find_codex_worktrees() -> list[Path]:
+    return [repo for slug in _child_dirs(HOME / ".codex" / "worktrees")
+            for repo in _child_dirs(slug)]
+
+
+def remove_codex_worktree(path: Path) -> None:
+    main = _worktree_main(path)
+    if main is None:
+        raise OSError("no longer a linked git worktree")
+    res = _git(main, "worktree", "remove", str(path))
+    if res is None or res.returncode != 0:
+        raise OSError((res.stderr.strip() if res else "") or "git worktree remove failed")
+
+
+# --- Adobe support folders for versions no longer installed ----------------
+#
+# /Library/Application Support/Adobe keeps a folder per installed version, and
+# an uninstall or upgrade leaves the old one. Adobe is not consistent about the
+# name: Illustrator uses the major version ("Adobe Illustrator 29" belongs to
+# Illustrator 2025, which is 29.x) while Photoshop uses the year. So neither is
+# assumed. A folder is orphaned only when a sibling folder of the same product
+# matches an app that is installed — proving which scheme that product uses on
+# this machine — and nothing installed matches this one under that scheme.
+
+APPLICATIONS = Path("/Applications")
+ADOBE_SUPPORT = Path("/Library/Application Support/Adobe")
+_ADOBE_VERSIONED = re.compile(r"^(Adobe .+) (\d+)$")
+
+
+def _bundle_major(bundle: Path) -> int | None:
+    import plistlib
+    try:
+        with (bundle / "Contents" / "Info.plist").open("rb") as fh:
+            version = plistlib.load(fh).get("CFBundleShortVersionString", "")
+        return int(str(version).split(".")[0])
+    except Exception:  # noqa: BLE001 - a plist that will not parse proves nothing
+        return None
+
+
+def _version_key(number: str) -> tuple[str, int]:
+    return ("year" if len(number) == 4 else "major", int(number))
+
+
+def _installed_adobe() -> dict[str, set]:
+    """Product name -> {("year", 2025), ("major", 29), ...} for /Applications."""
+    found: dict[str, set] = {}
+    try:
+        entries = sorted(APPLICATIONS.iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.startswith("Adobe ") or not _is_real_dir(entry):
+            continue
+        if entry.suffix == ".app":
+            folder, bundles = entry.stem, [entry]
+        else:
+            folder = entry.name
+            bundles = [b for b in _child_dirs(entry) if b.suffix == ".app"]
+        match = _ADOBE_VERSIONED.match(folder)
+        product = match.group(1) if match else folder
+        versions = found.setdefault(product, set())
+        if match and len(match.group(2)) == 4:
+            versions.add(("year", int(match.group(2))))
+        for bundle in bundles:
+            if bundle.name.startswith(product):
+                major = _bundle_major(bundle)
+                if major is not None:
+                    versions.add(("major", major))
+    return found
+
+
+def prove_orphaned_adobe_folder(path: Path) -> str:
+    if path.parent != ADOBE_SUPPORT:
+        return "not in the Adobe support folder"
+    match = _ADOBE_VERSIONED.match(path.name)
+    if not match:
+        return "not named for a product version"
+    if not _is_real_dir(path):
+        return "not a directory"
+    product, key = match.group(1), _version_key(match.group(2))
+    installed = _installed_adobe().get(product)
+    if not installed:
+        return f"no {product} in {APPLICATIONS} to show how its folders are named"
+    if key in installed:
+        return "that version is installed"
+    for sibling in _child_dirs(path.parent):
+        other = _ADOBE_VERSIONED.match(sibling.name)
+        if other and other.group(1) == product and sibling != path:
+            other_key = _version_key(other.group(2))
+            if other_key[0] == key[0] and other_key in installed:
+                return ""
+    return f"no folder of an installed {product} shows how it names versions"
+
+
+def find_adobe_folders() -> list[Path]:
+    return [p for p in _child_dirs(ADOBE_SUPPORT) if _ADOBE_VERSIONED.match(p.name)]
+
+
+# --- brag video intermediates ----------------------------------------------
+#
+# /brag renders into brag-output[-<timestamp>]/ beside brag-plan.md, leaving
+# the finished video and poster next to a work/ folder of frames, stills,
+# capture scripts and a high-quality master. Only work/ is claimed, and only
+# once a finished .mp4 sits beside it — before that the render may be running.
+
+_BRAG_OUTPUT = re.compile(r"^brag-output(-.+)?$")
+
+
+def prove_brag_work(path: Path) -> str:
+    parent = path.parent
+    if path.name != "work" or not _BRAG_OUTPUT.match(parent.name):
+        return "not the work folder of a brag-output folder"
+    if not _is_real_dir(path):
+        return "not a directory"
+    try:
+        if not stat.S_ISREG((parent / "brag-plan.md").lstat().st_mode):
+            return "no brag-plan.md beside it"
+        siblings = list(parent.iterdir())
+    except OSError:
+        return "no brag-plan.md beside it"
+    for sibling in siblings:
+        try:
+            if sibling.suffix.lower() == ".mp4" and stat.S_ISREG(sibling.lstat().st_mode):
+                return ""
+        except OSError:
+            continue
+    return "no finished .mp4 beside it; the render may still be running"
+
+
+@dataclass(frozen=True)
+class ProvenRule:
+    id: str
+    tier: str
+    label: str
+    regen: str
+    proof: str                    # what `prove` checks, in words, for the docs
+    prove: object = field(repr=False, compare=False, default=None)
+    find: object = field(repr=False, compare=False, default=None)    # None: found by the project walk
+    remove: object = field(repr=False, compare=False, default=None)  # None: removed like any other path
+    dir_name: str = ""            # project-walk rules: the directory name to test
+    warn: str = ""
+    system: bool = False
+    os: str = "any"
+
+    def applies_here(self) -> bool:
+        return self.os in ("any", PLATFORM)
+
+
+P = ProvenRule
+PROVEN_RULES = [
+    P("vscode-obsolete-ext", "low", "superseded editor extension versions",
+      "n/a - the current version stays installed",
+      "listed in the editor's extensions/.obsolete and not in its extensions.json",
+      prove=prove_obsolete_extension, find=find_obsolete_extensions),
+    P("claude-code-tmp", "medium", "Claude Code session scratch + tool output",
+      "n/a - a session makes a new one when it runs",
+      f"a session-id folder in /tmp/claude-<uid>/<project>/ that is yours and has had "
+      f"nothing written to it for {CLAUDE_TMP_STALE_DAYS} days",
+      prove=prove_stale_claude_session, find=find_claude_sessions, os="macos",
+      warn="a resumed session loses its scratchpad and old task output"),
+    P("brag-work", "medium", "brag video intermediates (frames, master)",
+      "re-run /brag to render again",
+      "the work/ folder of a brag-output* folder holding brag-plan.md and a finished .mp4; "
+      "the finished video is never claimed",
+      prove=prove_brag_work, dir_name="work"),
+    P("adobe-orphaned", "medium", "Adobe support folders for uninstalled versions",
+      "reinstalling that version from Creative Cloud recreates it",
+      "an `Adobe <product> <version>` folder whose version is not in /Applications, where a "
+      "sibling folder matching an installed version proves how the product names them",
+      prove=prove_orphaned_adobe_folder, find=find_adobe_folders, system=True, os="macos",
+      warn="requires sudo"),
+    P("codex-worktree", "high", "finished Codex worktrees",
+      "git worktree add <path> <branch> (every commit is on a remote)",
+      "a linked git worktree in ~/.codex/worktrees with a clean `git status` and no commit "
+      "missing from a remote",
+      prove=prove_finished_codex_worktree, find=find_codex_worktrees,
+      remove=remove_codex_worktree,
+      warn="removed with `git worktree remove`, not rm; git-ignored files in it (.env, "
+           "node_modules) go with it, and the Codex thread loses its checkout"),
+]
+PROVEN_BY_ID = {rule.id: rule for rule in PROVEN_RULES}
+PROVEN_BY_DIR: dict[str, list[ProvenRule]] = {}
+for _rule in PROVEN_RULES:
+    if _rule.dir_name:
+        PROVEN_BY_DIR.setdefault(_rule.dir_name, []).append(_rule)
+
+
+def match_proven_dir(name: str, path: Path) -> ProvenRule | None:
+    for rule in PROVEN_BY_DIR.get(name, ()):
+        if rule.applies_here() and not rule.prove(path):
+            return rule
+    return None
+
+
+def discover_proven(include_system: bool, excluded_paths=()) -> list[Candidate]:
+    out: list[Candidate] = []
+    for rule in PROVEN_RULES:
+        if rule.find is None or not rule.applies_here():
+            continue
+        if rule.system and not include_system:
+            continue
+        for path in rule.find():
+            if _is_excluded(path, excluded_paths) or path_is_protected(path):
+                continue
+            if rule.prove(path):
+                continue
+            out.append(Candidate(
+                path=path, rule_id=rule.id, tier=rule.tier, label=rule.label,
+                regen=rule.regen, warn=rule.warn, source="proven",
+            ))
     return out
 
 
@@ -1141,21 +1606,32 @@ def validate_for_delete(cand: Candidate, allowed_roots: list[Path],
         return "already gone"
     if cand.tier == "high" and not os.access(p, os.W_OK):
         return "not writable (needs sudo?)"
+    proven = PROVEN_BY_ID.get(cand.rule_id)
+    if proven is not None:
+        why = proven.prove(p)
+        if why:
+            return f"no longer proven: {why}"
     return ""
 
 
 def allowed_roots_for(args) -> list[Path]:
-    """Deletion is confined to $HOME plus any roots the user explicitly scanned."""
+    """Deletion is confined to $HOME plus any roots the user explicitly scanned,
+    plus the few rule locations outside it that are named here one by one."""
     roots = [HOME]
     for r in (getattr(args, "roots", None) or []):
         p = _absolute_lexical(r)
         if p != Path("/") and len(p.parts) >= 2:
             roots.append(p)
+    # your own Claude Code temp dir; nothing else in /tmp
+    claude_tmp = claude_tmp_root()
+    if claude_tmp is not None and PROVEN_BY_ID["claude-code-tmp"].applies_here():
+        roots.append(claude_tmp)
     # geteuid is unix-only, and every --system rule is macOS-only anyway, so
     # asking on Windows is both impossible and pointless.
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     if is_root and getattr(args, "system", False):
-        roots += [Path("/Library/Caches"), Path("/private/var/folders")]
+        roots += [Path("/Library/Caches"), Path("/private/var/folders"),
+                  Path("/Library/Developer/CoreSimulator/Caches/dyld"), ADOBE_SUPPORT]
     return roots
 
 
@@ -1238,8 +1714,11 @@ def delete(cands: list[Candidate], dry_run: bool, allowed: list[Path],
                 removed += 1
                 print(DIM(f"  would remove  {human(cand.size):>8}  {str(cand.path).replace(str(HOME), '~')}"))
                 continue
+            proven = PROVEN_BY_ID.get(cand.rule_id)
             try:
-                if cand.path.is_dir():
+                if proven is not None and proven.remove is not None:
+                    proven.remove(cand.path)
+                elif cand.path.is_dir():
                     shutil.rmtree(cand.path, ignore_errors=False)
                 else:
                     cand.path.unlink()
@@ -1361,6 +1840,7 @@ def collect(args) -> list[Candidate]:
     cands: list[Candidate] = []
     if not args.no_static:
         cands += discover_static(args.system, excluded_paths)
+        cands += discover_proven(args.system, excluded_paths)
     if not args.no_projects:
         roots = [_absolute_lexical(r) for r in args.roots] if args.roots else [HOME]
         cands += discover_projects(roots, args.max_depth, progress, excluded_paths)
@@ -1489,6 +1969,9 @@ def rules_document() -> dict:
     This Python source stays the single definition of the rules; the GUI embeds
     a generated copy of this document so both halves cannot disagree about what
     is safe to delete. `gui/rules.generated.json` is checked against this in CI.
+
+    `proven` rules are listed for completeness only. Their proofs are Python
+    code, not data, so the GUI cannot apply them and does not read the key.
     """
     return {
         "schema": 2,
@@ -1513,6 +1996,14 @@ def rules_document() -> dict:
             }
             for name, rules in sorted(ARTIFACT_RULES.items())
             for r in rules
+        ],
+        "proven": [
+            {
+                "id": r.id, "tier": r.tier, "label": r.label, "regen": r.regen,
+                "proof": r.proof, "dir_name": r.dir_name, "warn": r.warn,
+                "system": r.system, "os": r.os,
+            }
+            for r in PROVEN_RULES
         ],
     }
 
@@ -1544,6 +2035,11 @@ def cmd_tools(args) -> int:
         for rule in rules:
             gate = " (git-ignored only)" if rule.need_gitignored else ""
             print(f"  {TIER_PAINT[rule.tier](rule.tier[:3]):<4} {rule.id:<24} {DIM(rule.label + gate)}")
+    for rule in PROVEN_RULES:
+        if not rule.applies_here():
+            continue
+        print(f"  {TIER_PAINT[rule.tier](rule.tier[:3]):<4} {rule.id:<24} {DIM(rule.label)}")
+        print(f"       {'':<24} {DIM('only ' + rule.proof)}")
     print()
     return 0
 
@@ -1719,7 +2215,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="ignore global saved exclusions for a reproducible scan")
         p.add_argument("--max-depth", type=int, default=10, help="project scan depth (default 10)")
         p.add_argument("--system", action="store_true",
-                       help="also scan /Library/Caches and /private/var/folders (needs sudo to delete)")
+                       help="also scan /Library/Caches, /private/var/folders, simulator dyld caches "
+                            "and Adobe leftovers (needs sudo to delete)")
         p.add_argument("--no-projects", action="store_true", help="skip the project artifact scan")
         p.add_argument("--no-static", action="store_true", help="skip known cache locations")
         p.add_argument("--top", type=int, default=8, help="paths shown per rule with -v")
