@@ -759,8 +759,10 @@ def discover_projects(roots: list[Path], max_depth: int, progress, excluded_path
 # They stay out of the generated table's `static` and `artifacts` lists on
 # purpose. The GUI applies those with a glob and a marker and nothing else, so a
 # rule placed there would be claimed in the GUI without its proof. `dump-rules`
-# lists them under `proven`, which the GUI does not read: it finds less, never
-# more.
+# lists them under `proven` instead, and the GUI pairs each id with its own port
+# of the proof in gui/core/src/proven.rs, keeping these reason strings word for
+# word. An id listed here without a Rust proof is never claimed there: it finds
+# less, never more, and a cargo test fails until the port exists.
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 

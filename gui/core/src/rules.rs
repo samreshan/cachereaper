@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use crate::proven::Locations;
 use crate::scan::{Tree, NONE};
 
 const EMBEDDED: &str = include_str!("../../rules.generated.json");
@@ -76,6 +77,30 @@ pub struct ArtifactRule {
     pub need_gitignored: bool,
 }
 
+/// A rule that claims a path only while its proof holds for that path. What it
+/// is called and how risky it is comes from the table like any other rule; the
+/// proof itself is ported in `proven.rs`, because it is a decision, not data.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProvenRule {
+    pub id: String,
+    pub tier: String,
+    pub label: String,
+    pub regen: String,
+    /// what the proof checks, in words
+    pub proof: String,
+    /// project-walk rules: the directory name to test; empty for rules with a finder
+    pub dir_name: String,
+    pub warn: String,
+    pub system: bool,
+    pub os: String,
+}
+
+impl ProvenRule {
+    pub fn applies_here(&self) -> bool {
+        self.os == "any" || self.os == PLATFORM
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Rules {
     pub schema: u32,
@@ -83,6 +108,9 @@ pub struct Rules {
     #[serde(rename = "static")]
     pub statics: Vec<StaticRule>,
     pub artifacts: Vec<ArtifactRule>,
+    /// Missing means none: a rule without its proof is never claimed.
+    #[serde(default)]
+    pub proven: Vec<ProvenRule>,
 }
 
 impl Rules {
@@ -348,16 +376,22 @@ pub fn filter_gitignored(
     kept
 }
 
-/// Build the Git probe used by the rule pass.
+fn git_check_ignore_command(repo: &Path) -> std::process::Command {
+    let mut command = git_command();
+    command.args(["-C", &repo.to_string_lossy(), "check-ignore", "--stdin"]);
+    command
+}
+
+/// Every git the rules run, the proven rules' included, starts here.
 ///
 /// The desktop executable uses Windows' GUI subsystem, so it has no console for
 /// console children such as `git.exe` to inherit. Without `CREATE_NO_WINDOW`,
 /// Windows briefly creates a terminal for every repository checked during a
 /// scan. Redirecting stdio does not suppress that window; it must be disabled at
 /// process creation time.
-fn git_check_ignore_command(repo: &Path) -> std::process::Command {
+pub(crate) fn git_command() -> std::process::Command {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut command = std::process::Command::new("git");
-    command.args(["-C", &repo.to_string_lossy(), "check-ignore", "--stdin"]);
 
     #[cfg(windows)]
     {
@@ -421,8 +455,39 @@ pub fn dedupe_nested(mut findings: Vec<Finding>) -> Vec<Finding> {
     kept
 }
 
+/// Paths the proven rules' finders turn up that this tree holds and whose proof
+/// still holds. Mirrors `discover_proven`.
+///
+/// A path outside the scanned tree has no node to paint, so it is dropped
+/// before its proof runs: a Codex worktree costs two git calls to prove, and a
+/// scan of ~/Downloads should not pay them.
+pub fn proven_findings(tree: &Tree, include_system: bool, at: &Locations) -> Vec<Finding> {
+    let skip = |path: &Path| is_user_excluded(tree, path) || find_node(tree, path).is_none();
+    crate::proven::discover(include_system, at, skip)
+        .into_iter()
+        .filter_map(|(rule, path)| {
+            let node = find_node(tree, &path)?;
+            Some(proven_finding(tree, node, path, rule))
+        })
+        .collect()
+}
+
+fn proven_finding(tree: &Tree, node: u32, path: PathBuf, rule: &ProvenRule) -> Finding {
+    Finding {
+        node,
+        path,
+        rule_id: rule.id.clone(),
+        tier: rule.tier.clone(),
+        label: rule.label.clone(),
+        regen: rule.regen.clone(),
+        warn: rule.warn.clone(),
+        size: tree.nodes[node as usize].total_size,
+        source: "proven",
+    }
+}
+
 /// Every finding in the tree: artifacts marked during the walk, plus static
-/// rule hits, deduped so nested matches do not double-count.
+/// and proven rule hits, deduped so nested matches do not double-count.
 pub fn all_findings(tree: &Tree, include_system: bool) -> Vec<Finding> {
     all_findings_excluding(tree, include_system, &HashSet::new())
 }
@@ -436,6 +501,7 @@ pub fn all_findings_excluding(
 ) -> Vec<Finding> {
     let mut findings = artifact_findings(tree);
     findings.extend(static_findings(tree, include_system));
+    findings.extend(proven_findings(tree, include_system, &Locations::system()));
     dedupe_nested(findings)
         .into_iter()
         .filter(|finding| !excluded_rules.contains(&finding.rule_id))
@@ -443,11 +509,13 @@ pub fn all_findings_excluding(
 }
 
 /// Artifact hits recorded on the nodes during the walk, with the deferred
-/// gitignore-gated candidates resolved.
+/// gitignore-gated candidates resolved, plus the proven rules that are found
+/// by directory name during the same walk.
 pub fn artifact_findings(tree: &Tree) -> Vec<Finding> {
     let matcher = ArtifactMatcher::new();
     let mut direct = Vec::new();
     let mut deferred: Vec<(u32, PathBuf, ArtifactRule)> = Vec::new();
+    let mut proven = Vec::new();
 
     // Replicate the CLI's traversal decisions so both halves claim the same set:
     // top-level directories like Library/Applications are not searched for
@@ -495,6 +563,12 @@ pub fn artifact_findings(tree: &Tree) -> Vec<Finding> {
             continue;
         }
         let Some(rule) = matcher.match_dir(&node.name, &siblings, &path) else {
+            // same order as discover_projects: an artifact rule first, then a
+            // proven one, whose proof is only run for its own directory name
+            if let Some(rule) = crate::proven::match_dir(&node.name, &path) {
+                claimed[idx] = true;
+                proven.push(proven_finding(tree, idx as u32, path, rule));
+            }
             continue;
         };
         claimed[idx] = true;
@@ -519,6 +593,7 @@ pub fn artifact_findings(tree: &Tree) -> Vec<Finding> {
             warn: String::new(),
             source: "project",
         })
+        .chain(proven)
         .collect()
 }
 

@@ -10,6 +10,8 @@
 
 use std::path::{Component, Path, PathBuf};
 
+use crate::proven::Locations;
+
 /// Path components that are never candidates and never deletable.
 pub const FORBIDDEN_PARTS: &[&str] = &[
     ".git",
@@ -171,8 +173,22 @@ pub struct Target {
     pub regen: String,
 }
 
+/// The desktop app cannot delete as root, so a system-scope proven rule (the
+/// Adobe leftovers) is shown when asked for and never removed from here.
+pub const SYSTEM_RULE_REFUSAL: &str =
+    "system location: remove it with `sudo cachereaper clean --system`";
+
 /// Re-validates immediately before deletion. Mirrors `validate_for_delete`.
 pub fn validate_for_delete(target: &Target, allowed_roots: &[PathBuf]) -> String {
+    validate_for_delete_in(target, allowed_roots, &Locations::system())
+}
+
+/// `validate_for_delete`, with the places the proven rules look at spelled out.
+pub fn validate_for_delete_in(
+    target: &Target,
+    allowed_roots: &[PathBuf],
+    at: &Locations,
+) -> String {
     let p = &target.path;
     if !p.is_absolute() {
         return "not absolute".to_string();
@@ -188,14 +204,26 @@ pub fn validate_for_delete(target: &Target, allowed_roots: &[PathBuf]) -> String
     if name != target.expect_name {
         return "name changed since scan".to_string();
     }
-    if !allowed_roots.iter().any(|r| is_within(p, r)) {
+    let proven = crate::proven::rule(&target.rule_id);
+    let extra = proven.and_then(|rule| crate::proven::extra_allowed_root(rule, at));
+    if !allowed_roots.iter().chain(&extra).any(|r| is_within(p, r)) {
         return "outside allowed roots".to_string();
     }
     match std::fs::symlink_metadata(p) {
-        Err(_) => "already gone".to_string(),
-        Ok(md) if md.file_type().is_symlink() => "symlink".to_string(),
-        Ok(_) => String::new(),
+        Err(_) => return "already gone".to_string(),
+        Ok(md) if md.file_type().is_symlink() => return "symlink".to_string(),
+        Ok(_) => {}
     }
+    if let Some(rule) = proven {
+        if rule.system {
+            return SYSTEM_RULE_REFUSAL.to_string();
+        }
+        let why = crate::proven::prove(&rule.id, p, at);
+        if !why.is_empty() {
+            return format!("no longer proven: {why}");
+        }
+    }
+    String::new()
 }
 
 #[cfg(test)]
